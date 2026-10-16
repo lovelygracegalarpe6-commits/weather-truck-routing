@@ -134,14 +134,15 @@ Severe or No Travel miles.
     up with the basemap;
   - opacity from each pixel's distance to the nearest route, computed once per heatmap,
     so the corridor is a smooth band along the roads;
-  - blending between neighbouring hours, so scrubbing and playback are continuous.
-- The pixels are handed directly to MapLibre's image source (`updateImage({image})`):
-  no PNG encoding, no network.
-- Each slider tick costs **about 1.5 ms of JS** in the production build. Sidebar
+  - each whole hour painted once and cached; in-between times cross-fade the two
+    neighbouring hours, so scrubbing and playback are continuous and cheap.
+- The pixels are drawn into a MapLibre canvas source and copied into its texture in
+  place: no PNG encoding, no network, no tile reloads.
+- Each slider tick costs **about 2–3 ms of JS** in the production build. Sidebar
   components are memoised, so only the map, the timeline and the current checkpoint row
   update.
 - The map library is a separate, lazily loaded chunk, so the form paints first.
-- Truck markers on every route move with the slider. Hovering the map shows the value
+- Truck markers (lightweight DOM markers) on every route move with the slider. Hovering the map shows the value
   under the cursor.
 
 ---
@@ -240,9 +241,9 @@ software-only WebGL, so these are worst-case numbers:
 | --- | --- |
 | First plan | ~6 s, dominated by OSRM and the weather API |
 | Re-plan with a new load or departure | 35–200 ms, from cache, with no upstream calls |
-| Slider | ~1.5 ms of JS per tick |
-| Playback | ~28 fps, with flat memory |
-| JS on first load | 80 KB gzipped |
+| Slider | ~2–3 ms of JS per tick |
+| Playback | ~10 fps on this PC, limited by software rasterisation (the main thread is ~50% idle); memory stays flat |
+| JS on first load | 80 KB gzipped app code; the map library loads in parallel |
 
 ## Deployment
 

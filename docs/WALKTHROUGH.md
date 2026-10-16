@@ -53,7 +53,8 @@ Talking points for the 5–10 minute walkthrough the brief asks for. Times are t
 - Heatmap rendering:
   - the frontend renders the grid itself, with a Mercator correction and bilinear
     interpolation;
-  - pixels go straight to the GPU texture, at about 1.5 ms of JS per frame;
+  - whole hours are painted once and cross-faded, then copied into a canvas-source
+    texture in place, at about 2–3 ms of JS per frame;
   - mention the perf suite: mocked upstreams, profiles, and the fixes in docs/PERFORMANCE.md;
   - the sidebar is memoised, so scrubbing doesn't re-render it.
 - Tests, CI, and a single Docker image serving both the API and the SPA.

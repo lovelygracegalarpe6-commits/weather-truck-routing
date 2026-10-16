@@ -5,14 +5,15 @@
   weather APIs.
 - Changing the load or the departure re-plans in **35–200 ms**, because routes and
   forecasts are cached.
-- Scrubbing the heatmap costs **about 1.5 ms of JavaScript per tick**.
-- Playback holds **about 28 fps on a 2013 dual-core with no GPU driver**. On an ordinary
-  laptop with hardware WebGL it should be considerably smoother, but that was not
-  measured.
+- Scrubbing the heatmap costs **about 2–3 ms of JavaScript per tick**.
 - Memory stays flat during playback.
+- On the test PC, which has **no working GPU driver**, heatmap playback runs at about
+  **10 fps**. That limit comes from Chrome rasterising the map in software: during
+  playback the page's main thread is about 50% idle.
 
-This testing found and fixed eight real bottlenecks. The fixes are listed at the end,
-each with its before/after numbers.
+This testing found and fixed eleven real problems. The fixes are listed at the end,
+each with its before/after numbers. It also caught two measurement mistakes, which are
+described below so the numbers can be trusted.
 
 All scripts live in [`perf/`](../perf/README.md) and can be rerun.
 
@@ -22,7 +23,7 @@ All scripts live in [`perf/`](../perf/README.md) and can be rerun.
 | --- | --- |
 | Upstream APIs | A local mock ([`perf/mock_upstreams.py`](../perf/mock_upstreams.py)) replays **recorded real OSRM responses** and synthesises Open-Meteo forecasts for any coordinates (with a storm, so risk and heatmap have real work to do). Its latency is calibrated to the real services: OSRM 2 s per request; Open-Meteo 0.5 s plus 20 ms per location. This avoids load-testing free public APIs, and makes runs repeatable. |
 | Server | Production settings (`DEBUG=0`) on **waitress** with 16 threads. Waitress stands in for gunicorn, which doesn't run on Windows; both are threaded WSGI servers. |
-| Browser | Headless Chrome via Playwright against the production build. Uses CDP for CPU profiles and heap measurements, and `PerformanceObserver` for paints and long tasks. |
+| Browser | Headless Chrome via Playwright against the production build. Uses CDP for CPU profiles, heap and listener counts, and `PerformanceObserver` for paints and long tasks. The scripts **refuse to report** unless the map canvas is visibly sized, and profiles are taken only after the map has settled. |
 | Trips | Dallas → Houston (240 mi), Chicago → Nashville (470 mi), Denver → Salt Lake City (520 mi), and **Los Angeles → Chicago (2,000 mi)** as a stress case. |
 
 **Test machine:** AMD A6-6400K (2 cores, 2013) with 7 GB RAM on Windows 11.
@@ -30,9 +31,7 @@ All scripts live in [`perf/`](../perf/README.md) and can be rerun.
   session on this PC: the GPU driver isn't in use.
 - Server, mock and browser all share the same two cores.
 
-So treat everything below as a **worst case**. Frame-rate figures in particular are
-limited by software rasterisation: halving the viewport's width and height raised
-playback from 8 to 20 fps before the optimisations below.
+Treat everything below as a **worst case**.
 
 ## Backend
 
@@ -75,26 +74,35 @@ playback from 8 to 20 fps before the optimisations below.
 | Denver → Salt Lake City | 398 → 62 ms | 474 → 259 ms |
 | LA → Chicago | **1,121 → 202 ms** | **1,402 → 364 ms** |
 
-## Frontend (production build)
+## Frontend (production build, 1440×900 viewport)
+
+Median-of-runs figures from `browser_perf.mjs`, against the warm mock backend:
 
 | Metric | Result |
 | --- | --- |
-| JS on first load | 80 KB gzipped for the app; the map library loads separately (286 KB gzipped) |
-| First contentful paint, cold cache (median of 5) | ~690 ms (~780 ms before code-splitting) |
-| Click → routes on screen (server cache warm) | 0.7–1.0 s, of which ~0.2 s is the request |
-| Click → heatmap ready | 2.1–3.2 s |
-| Slider: JS per tick, p50 / p95 | **1.5 / 3.4 ms** (3.9 / 43 ms before) |
-| Slider: input → next frame, p50 | **26 ms** |
-| Playback | **28 fps**, frame p95 61 ms, no long tasks (8 fps / 128 ms before) |
-| Heap after 30 s of playback | Flat (−0.3 to +0.9 MB): no leak |
+| JS on first load | 80 KB gzipped app code; MapLibre (286 KB gzipped) loads in parallel |
+| First contentful paint, cold cache | ~600 ms in the load-only test (784 ms before code-splitting); 750 ms within the full suite |
+| Click → routes on screen | 0.8–0.9 s, of which 0.05–0.2 s is the request |
+| Click → heatmap ready | 3.0–3.3 s; the heatmap request competes with software rendering for CPU |
+| Slider: JS per tick, p50 / p95 | **2.3–2.7 / 27–31 ms** |
+| Slider: input → next frame, p50 | 54–70 ms (dominated by the software-rendered repaint) |
+| Playback | **9.5–9.8 fps**, frame p50 ~115 ms; script CPU 57–61% (7.7–8.1 fps and 79–84% before the playback fixes) |
+| Heap after 30 s of playback | +0.4 MB, flat. DOM listener counts rise and fall back under GC, so nothing leaks. |
 | Layout shift (CLS) | 0 |
 
-Where main-thread time goes during playback, at the start of tuning:
-- **Map drawing (MapLibre):** most of it, plus about 30% native time, which is the
-  software GL renderer.
-- **Our heatmap renderer:** about 12%.
+**Where the playback frame time goes** (`browser_profile.mjs`, steady state, 8 s):
 
-After the fixes, the heatmap renderer is about 5% of main-thread time.
+| Share of main thread | |
+| --- | --- |
+| idle | 53% |
+| native / program (GL command marshalling) | 25% |
+| MapLibre JS | 13% |
+| App code including React | 6% |
+| GC | 3% |
+
+The main thread is idle half the time, so the frame rate is bound by the GPU process's
+software rasteriser, not by JavaScript. With hardware WebGL that rasterisation cost
+largely disappears; how many fps a typical laptop would reach was **not measured here**.
 
 ## What was fixed
 
@@ -105,21 +113,31 @@ After the fixes, the heatmap renderer is about 5% of main-thread time.
 | The route de-duplication check ran a binary search per sample (26k per comparison) | cProfile | Walk the segments once instead | Cold long-haul plan −26% CPU |
 | Detour routes were requested one after another | Cold latency test | Request them in concurrent pairs, judged in a fixed order | Trips needing 2 detours: 7.6 → 5.7 s |
 | The heatmap scored 10k samples through the full `assess()` and lazy settings lookups | cProfile | A level-only function (tested to match `assess()`), with settings read once | Small (~5%) |
-| The heatmap was drawn at 8 px per grid cell | Browser CPU profile | 4 px per cell; the GPU's linear filtering keeps it smooth | Heatmap share of main thread 12% → 5% |
-| The corridor looked blocky (grid-shaped), with a hard edge where data ended | Visual check while tuning | A distance-to-route opacity mask, computed once per heatmap | Smooth band following the roads |
-| The whole bundle had to be parsed before first paint | Load timings | Lazy-load the map chunk | Main JS 353 → 80 KB gzipped; FCP −10–27% |
+| The heatmap was drawn at 8 px per grid cell | Browser CPU profile | 4 px per cell; the GPU's linear filtering keeps it smooth | Paint cost ÷4 |
+| Every playback frame re-painted from the grid | Browser CPU profile | Paint each whole hour once per layer; cross-fade cached images in between | Heatmap dropped out of the top profile entries |
+| `ImageSource.updateImage` re-laid out tiles and fired metadata events on every frame | Reading MapLibre's source while chasing a playback slowdown | Canvas source updated in place (draw, then `play()`/`pause()`) | No per-frame source reloads |
+| The truck layer's `setData` cost a worker round trip, a tile reload and label placement per frame | Listener-churn test | DOM markers | Fewer per-frame jobs; with the two fixes above, playback 8 → 9.7 fps and script CPU 82% → 59% |
+| The corridor looked blocky (grid-shaped), with a hard edge where data ended | Visual check | A distance-to-route opacity mask, computed once per heatmap | Smooth band following the roads |
+| The whole bundle had to be parsed before first paint | Load timings | Lazy-load the map chunk | Main JS 353 → 80 KB gzipped; FCP 784 → ~600 ms |
 
-## Measurement pitfalls found along the way
+**A regression introduced and fixed along the way.** Lazy-loading the map moved
+MapLibre's CSS after ours, and an equally specific rule collapsed the map container to
+zero height. Screenshots caught it. The browser scripts now check that the map is
+visibly sized before reporting anything.
 
+## Measurement mistakes caught (and how they're prevented)
+
+- **Invisible map.** During the collapsed-map regression, playback measured 28 fps and
+  the slider 26 ms. Those numbers were meaningless, because a zero-height map has
+  nothing to draw. The scripts now assert a visible canvas.
+- **Unsettled map.** Profiling right after a plan, while basemap tiles were still
+  arriving, measured about 20 fps against a steady state of about 10. `browser_profile`
+  now warms the HTTP cache and waits for the map to settle.
 - **Windows proxy auto-detection** added about 1.5 s to the first request of every new
-  Chrome profile. The browser scripts launch Chrome with `--no-proxy-server`.
-- **Software WebGL makes everything look slower.** It occupies both cores during map
-  animations, which also slowed the co-located server; one cached re-plan measured
-  1.8 s in-browser against under 0.1 s server-side. End-to-end timings from this
-  machine are pessimistic.
-- **Early runs of this PC's network stalled TLS handshakes** to the public APIs. That's
-  why all load testing uses the mock, and why the backend now has short connect timeouts
-  with retries (see the main README).
+  Chrome profile. The scripts launch Chrome with `--no-proxy-server`.
+- **Shared CPU.** Software WebGL occupies both cores during map animations, which slows
+  the co-located server (e.g. heatmap requests taking 2–3 s in-browser against 1.5 s
+  in the load test). End-to-end timings from this machine are pessimistic.
 
 ## Known limits
 
@@ -131,3 +149,5 @@ After the fixes, the heatmap renderer is about 5% of main-thread time.
   - more processes, sharing a Redis cache;
   - caching the heatmap per (corridor, departure hour, load);
   - moving the scoring loop to NumPy.
+- **No hardware-GPU measurement.** Playback smoothness on typical hardware is
+  expected to be much better than on this test machine, but that hasn't been verified.
