@@ -2,12 +2,13 @@ import type { Feature, FeatureCollection } from 'geojson'
 import {
   type ExpressionSpecification,
   type GeoJSONSource,
-  type ImageSource,
-  type ImageSourceSpecification,
+  type CanvasSource,
+  type CanvasSourceSpecification,
   type LngLatBoundsLike,
   Map as MapLibreMap,
   type MapLayerMouseEvent,
   type MapMouseEvent,
+  Marker,
   NavigationControl,
   Popup,
   ScaleControl,
@@ -29,7 +30,6 @@ setWorkerUrl(workerUrl)
 
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/positron'
 const ROUTE_IDS = ['A', 'B', 'C'] as const
-const FONT = ['Noto Sans Bold']
 const BRAND = '#0b3d4b'
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] }
 
@@ -127,15 +127,19 @@ function addLayers(map: MapLibreMap) {
   }
   const beforeLabels = map.getStyle().layers.find((l) => l.type === 'symbol')?.id
 
+  // A canvas source (not an image source) so frames can be updated in place; see the
+  // heatmap effect in MapView.
   map.addSource('heatmap', {
-    type: 'image',
+    type: 'canvas',
+    canvas: document.createElement('canvas'),
+    animate: false,
     coordinates: [
       [-100, 41],
       [-99, 41],
       [-99, 40],
       [-100, 40],
     ],
-  } as ImageSourceSpecification)
+  } as CanvasSourceSpecification)
   map.addLayer(
     {
       id: 'heatmap',
@@ -225,33 +229,6 @@ function addLayers(map: MapLibreMap) {
       'circle-stroke-width': 3,
     },
   })
-
-  map.addSource('trucks', { type: 'geojson', data: EMPTY })
-  map.addLayer({
-    id: 'trucks',
-    type: 'circle',
-    source: 'trucks',
-    paint: {
-      'circle-radius': ['case', ['get', 'selected'], 10, 7],
-      'circle-color': BRAND,
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': 2.5,
-      'circle-opacity': ['case', ['get', 'selected'], 1, 0.75],
-    },
-  })
-  map.addLayer({
-    id: 'trucks-label',
-    type: 'symbol',
-    source: 'trucks',
-    layout: {
-      'text-field': ['get', 'routeId'],
-      'text-font': FONT,
-      'text-size': ['case', ['get', 'selected'], 12, 9],
-      'text-allow-overlap': true,
-      'text-ignore-placement': true,
-    },
-    paint: { 'text-color': '#ffffff' },
-  })
 }
 
 export function MapView(props: Props) {
@@ -262,6 +239,7 @@ export function MapView(props: Props) {
   const popupRef = useRef<Popup | null>(null)
   const hoverRef = useRef<number | null>(null)
   const cornersRef = useRef<Corners | null>(null)
+  const truckMarkers = useRef(new Map<string, Marker>())
   const propsRef = useRef(props)
   const [ready, setReady] = useState(false)
 
@@ -418,7 +396,10 @@ export function MapView(props: Props) {
     ;(map.getSource('checkpoints') as GeoJSONSource).setData({ type: 'FeatureCollection', features })
   }, [plan, selectedRouteId, ready])
 
-  // Heatmap frame: hand the pixels straight to the GPU texture (no encoding, no network).
+  // Heatmap frame. The pixels are drawn into the canvas source's canvas, and play() +
+  // pause() copies it into the existing GPU texture once. ImageSource.updateImage was
+  // used before, but it re-lays out the source's tiles and fires metadata events on every
+  // call, which slowed playback from ~20 to ~8 fps within seconds (perf/README.md).
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready) return
@@ -428,28 +409,51 @@ export function MapView(props: Props) {
       cornersRef.current = null
       return
     }
-    const source = map.getSource('heatmap') as ImageSource
-    const image = new ImageData(heatmap.pixels, heatmap.width, heatmap.height)
+    if (!show) return // nothing to draw while hidden
+    const source = map.getSource('heatmap') as CanvasSource
+    const canvas = source.getCanvas()
+    if (canvas.width !== heatmap.width || canvas.height !== heatmap.height) {
+      canvas.width = heatmap.width
+      canvas.height = heatmap.height
+    }
+    canvas.getContext('2d')!.putImageData(new ImageData(heatmap.pixels, heatmap.width, heatmap.height), 0, 0)
     if (cornersRef.current !== heatmap.corners) {
       cornersRef.current = heatmap.corners
-      source.updateImage({ image, coordinates: heatmap.corners })
-    } else {
-      source.updateImage({ image })
+      source.setCoordinates(heatmap.corners)
     }
+    source.play()
+    source.pause()
   }, [heatmap, heatmapVisible, ready])
 
-  // Truck positions at the slider time.
+  // Truck positions at the slider time. DOM markers rather than a GeoJSON layer: moving
+  // three markers is a CSS transform, while setData on every frame meant a worker round
+  // trip, a tile reload and label placement each time (perf/README.md).
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready) return
-    ;(map.getSource('trucks') as GeoJSONSource).setData({
-      type: 'FeatureCollection',
-      features: trucks.map((t) => ({
-        type: 'Feature',
-        properties: { routeId: t.routeId, selected: t.routeId === selectedRouteId },
-        geometry: { type: 'Point', coordinates: [t.lon, t.lat] },
-      })),
-    })
+    const markers = truckMarkers.current
+    const seen = new Set<string>()
+    for (const t of trucks) {
+      seen.add(t.routeId)
+      let marker = markers.get(t.routeId)
+      if (!marker) {
+        const el = document.createElement('div')
+        el.className = 'truck-marker'
+        el.textContent = t.routeId
+        el.setAttribute('aria-hidden', 'true')
+        marker = new Marker({ element: el }).setLngLat([t.lon, t.lat]).addTo(map)
+        markers.set(t.routeId, marker)
+      } else {
+        marker.setLngLat([t.lon, t.lat])
+      }
+      marker.getElement().classList.toggle('selected', t.routeId === selectedRouteId)
+    }
+    for (const [id, marker] of markers) {
+      if (!seen.has(id)) {
+        marker.remove()
+        markers.delete(id)
+      }
+    }
   }, [trucks, selectedRouteId, ready])
 
   // Checkpoint highlighted from the table.

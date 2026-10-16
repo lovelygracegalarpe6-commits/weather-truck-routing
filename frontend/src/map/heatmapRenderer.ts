@@ -56,6 +56,8 @@ export class HeatmapRenderer {
   private readonly mask: Float32Array
   private readonly buffers: [Uint8ClampedArray<ArrayBuffer>, Uint8ClampedArray<ArrayBuffer>]
   private flip = 0
+  private readonly hourImages = new Map<number, Uint8ClampedArray<ArrayBuffer>>()
+  private cachedLayer: HeatmapLayerKey | null = null
   private readonly data: HeatmapResponse
 
   // 4 px per grid cell is enough: the field is already a smooth bilinear surface and the
@@ -155,15 +157,51 @@ export class HeatmapRenderer {
     return lut
   }
 
+  /**
+   * The image at a (fractional) hour.
+   *
+   * Whole hours are painted once per layer and cached; in-between times cross-fade the
+   * two neighbouring hour images byte by byte. That is ~5x cheaper per frame than
+   * painting from the grid, which matters during playback. Exact hours are
+   * pixel-identical to a direct paint; within an hour colours cross-fade rather than
+   * following the colour ramp, which is not visible at this scale.
+   */
   render(layer: HeatmapLayerKey, hours: number): RenderedFrame {
-    const src = this.fieldAt(layer, hours)
+    const { width, height } = this
+    const h = Math.min(Math.max(hours, 0), this.frames - 1)
+    const f0 = Math.floor(h)
+    const a = h - f0
+    const base = this.hourImage(layer, f0)
+    if (a < 1e-3 || f0 + 1 >= this.frames) return { pixels: base, width, height }
+    const next = this.hourImage(layer, f0 + 1)
+    const out = this.buffers[this.flip]
+    this.flip ^= 1 // double-buffer: the previous frame may still be referenced by the map
+    for (let i = 0; i < out.length; i++) out[i] = base[i] + (next[i] - base[i]) * a
+    return { pixels: out, width, height }
+  }
+
+  /** RGBA for one whole hour. Only the current layer is kept, bounding memory. */
+  private hourImage(layer: HeatmapLayerKey, frame: number): Uint8ClampedArray<ArrayBuffer> {
+    if (layer !== this.cachedLayer) {
+      this.hourImages.clear()
+      this.cachedLayer = layer
+    }
+    let image = this.hourImages.get(frame)
+    if (!image) {
+      image = new Uint8ClampedArray(this.width * this.height * 4)
+      this.paint(layer, this.field(layer, frame), image)
+      this.hourImages.set(frame, image)
+    }
+    return image
+  }
+
+  /** Paint grid values to RGBA: bilinear interpolation, colour lookup, corridor mask. */
+  private paint(layer: HeatmapLayerKey, src: Float32Array, out: Uint8ClampedArray): void {
     const { min, max, rgba, size } = this.lut(layer)
     const scale = (size - 1) / (max - min)
     const last = size - 1
     const { nx, ny, width, height, colI0, colFx, rowJ0, rowFy, mask } = this
     const dx = nx > 1 ? 1 : 0
-    const out = this.buffers[this.flip]
-    this.flip ^= 1 // double-buffer: the previous frame may still be referenced by the map
 
     // Hot loop: locals only, `v === v` is a NaN test without a call, smoothstep inlined.
     let o = 0
@@ -204,7 +242,6 @@ export class HeatmapRenderer {
         o += 4
       }
     }
-    return { pixels: out, width, height }
   }
 
   /** Interpolated value at a map position (for the hover read-out), or null outside. */

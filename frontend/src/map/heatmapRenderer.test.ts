@@ -75,9 +75,20 @@ describe('HeatmapRenderer', () => {
     expect(r.valueAt('risk', 0, -90, 41)).toBeNull() // outside the grid
   })
 
-  it('double-buffers frames so the map never reads a half-written image', () => {
-    const r = new HeatmapRenderer(heatmap([uniform(1)]), MIDDLE)
+  it('caches whole hours and cross-fades between them', () => {
+    const r = new HeatmapRenderer(heatmap([uniform(0), uniform(4)]), MIDDLE)
+    const h0 = r.render('risk', 0).pixels
+    const h1 = r.render('risk', 1).pixels
+    const mid = r.render('risk', 0.5).pixels
 
-    expect(r.render('risk', 0).pixels).not.toBe(r.render('risk', 0).pixels)
+    expect(r.render('risk', 0).pixels).toBe(h0) // painted once, then reused
+    const i = (Math.floor(r.height / 2) * r.width + Math.floor(r.width / 2)) * 4
+    for (let c = 0; c < 4; c++) expect(Math.abs(mid[i + c] - (h0[i + c] + h1[i + c]) / 2)).toBeLessThanOrEqual(1)
+  })
+
+  it('double-buffers blended frames so the map never reads a half-written image', () => {
+    const r = new HeatmapRenderer(heatmap([uniform(0), uniform(4)]), MIDDLE)
+
+    expect(r.render('risk', 0.5).pixels).not.toBe(r.render('risk', 0.5).pixels)
   })
 })
