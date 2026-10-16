@@ -28,9 +28,18 @@ import type { Corners, RenderedFrame } from './heatmapRenderer'
 // once a bundler relocates that module; point it at the file explicitly instead.
 setWorkerUrl(workerUrl)
 
-const STYLE_URL = 'https://tiles.openfreemap.org/styles/positron'
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/dark'
 const ROUTE_IDS = ['A', 'B', 'C'] as const
-const BRAND = '#0b3d4b'
+const INK = '#0a0f1a' // outlines that separate our layers from the dark basemap
+const ACCENT = '#2dd4bf'
+const BADGE = '#14b8a6'
+const BADGE_DIM = '#475569'
+
+/** Camera padding that keeps routes clear of the floating panel and the timeline. */
+function framePadding() {
+  const wide = window.matchMedia('(min-width: 901px)').matches
+  return { top: 70, bottom: 210, left: wide ? 480 : 40, right: 70 }
+}
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] }
 
 export interface TruckMarker {
@@ -120,7 +129,7 @@ function badge(letter: string, fill: string): { image: ImageData; pixelRatio: nu
 
 function addLayers(map: MapLibreMap) {
   for (const id of ROUTE_IDS) {
-    for (const [suffix, fill] of [['', BRAND], ['-dim', '#667085']] as const) {
+    for (const [suffix, fill] of [['', BADGE], ['-dim', BADGE_DIM]] as const) {
       const { image, pixelRatio } = badge(id, fill)
       map.addImage(`badge-${id}${suffix}`, image, { pixelRatio })
     }
@@ -154,13 +163,29 @@ function addLayers(map: MapLibreMap) {
   for (const id of ROUTE_IDS) {
     const source = `route-${id}`
     map.addSource(source, { type: 'geojson', data: EMPTY, lineMetrics: true })
+    // A soft glow under the selected route, in the same risk colours.
+    map.addLayer(
+      {
+        id: `${source}-glow`,
+        type: 'line',
+        source,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-width': 16,
+          'line-blur': 10,
+          'line-opacity': 0,
+          'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, '#98a2b3', 1, '#98a2b3'],
+        },
+      },
+      beforeLabels,
+    )
     map.addLayer(
       {
         id: `${source}-casing`,
         type: 'line',
         source,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.95 },
+        paint: { 'line-color': INK, 'line-width': 7, 'line-opacity': 0.9 },
       },
       beforeLabels,
     )
@@ -210,8 +235,8 @@ function addLayers(map: MapLibreMap) {
         9,
         ['case', hovered, 11, ['get', 'selected'], 7, 4],
       ],
-      'circle-stroke-color': ['case', hovered, BRAND, '#ffffff'],
-      'circle-stroke-width': ['case', hovered, 3, 1.2],
+      'circle-stroke-color': ['case', hovered, ACCENT, ['get', 'selected'], '#ffffff', INK],
+      'circle-stroke-width': ['case', hovered, 3, ['get', 'selected'], 1.5, 1],
       'circle-opacity': ['case', ['get', 'selected'], 1, 0.6],
       'circle-stroke-opacity': ['case', ['get', 'selected'], 1, 0.6],
     },
@@ -224,8 +249,8 @@ function addLayers(map: MapLibreMap) {
     source: 'endpoints',
     paint: {
       'circle-radius': 7,
-      'circle-color': ['match', ['get', 'kind'], 'origin', '#ffffff', BRAND],
-      'circle-stroke-color': BRAND,
+      'circle-color': ['match', ['get', 'kind'], 'origin', '#ffffff', ACCENT],
+      'circle-stroke-color': INK,
       'circle-stroke-width': 3,
     },
   })
@@ -260,7 +285,7 @@ export function MapView(props: Props) {
     })
     map.touchZoomRotate.disableRotation()
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-    map.addControl(new ScaleControl({ unit: 'imperial' }), 'bottom-right')
+    map.addControl(new ScaleControl({ unit: 'imperial' }), 'top-right')
     const popup = new Popup({ closeButton: false, closeOnClick: false, maxWidth: '300px', offset: 10 })
     popupRef.current = popup
 
@@ -332,7 +357,9 @@ export function MapView(props: Props) {
           : EMPTY,
       )
       if (route) {
-        map.setPaintProperty(`route-${id}`, 'line-gradient', riskGradient(route, riskColor) as ExpressionSpecification)
+        const gradient = riskGradient(route, riskColor) as ExpressionSpecification
+        map.setPaintProperty(`route-${id}`, 'line-gradient', gradient)
+        map.setPaintProperty(`route-${id}-glow`, 'line-gradient', gradient)
       }
     }
     const endpoints = map.getSource('endpoints') as GeoJSONSource
@@ -359,7 +386,7 @@ export function MapView(props: Props) {
       [Math.min(...lons), Math.min(...lats)],
       [Math.max(...lons), Math.max(...lats)],
     ]
-    map.fitBounds(bounds, { padding: { top: 60, bottom: 190, left: 60, right: 60 }, duration: 900 })
+    map.fitBounds(bounds, { padding: framePadding(), duration: 900 })
   }, [plan, ready])
 
   // Selection: emphasise the selected route and its checkpoints.
@@ -371,10 +398,12 @@ export function MapView(props: Props) {
     const ordered = [...ROUTE_IDS.filter((id) => id !== selectedRouteId), ...ROUTE_IDS.filter((id) => id === selectedRouteId)]
     for (const id of ordered) {
       const selected = id === selectedRouteId
-      map.setPaintProperty(`route-${id}`, 'line-width', selected ? 6 : 3.5)
-      map.setPaintProperty(`route-${id}`, 'line-opacity', selected ? 1 : 0.55)
-      map.setPaintProperty(`route-${id}-casing`, 'line-width', selected ? 10 : 6)
+      map.setPaintProperty(`route-${id}`, 'line-width', selected ? 5.5 : 3)
+      map.setPaintProperty(`route-${id}`, 'line-opacity', selected ? 1 : 0.5)
+      map.setPaintProperty(`route-${id}-casing`, 'line-width', selected ? 9 : 5.5)
+      map.setPaintProperty(`route-${id}-glow`, 'line-opacity', selected ? 0.55 : 0)
       map.setLayoutProperty(`route-${id}-label`, 'icon-image', selected ? `badge-${id}` : `badge-${id}-dim`)
+      map.moveLayer(`route-${id}-glow`, beforeLabels)
       map.moveLayer(`route-${id}-casing`, beforeLabels)
       map.moveLayer(`route-${id}`, beforeLabels)
     }
@@ -480,7 +509,7 @@ export function MapView(props: Props) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready || !focus) return
-    map.flyTo({ center: [focus.lon, focus.lat], zoom: Math.max(map.getZoom(), 8), duration: 800 })
+    map.flyTo({ center: [focus.lon, focus.lat], zoom: Math.max(map.getZoom(), 8), duration: 800, padding: framePadding() })
   }, [focus, ready])
 
   return (

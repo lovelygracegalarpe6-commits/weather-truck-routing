@@ -1,8 +1,9 @@
 import { memo } from 'react'
 import type { PlanResponse } from '../api/types'
 import { formatDateTime, formatDuration, formatMiles } from '../lib/format'
-import { RiskBar } from './RiskBar'
+import { Icon } from './Icon'
 import { RiskChip } from './RiskChip'
+import { RiskProfile } from './RiskProfile'
 
 interface Props {
   plan: PlanResponse
@@ -15,7 +16,10 @@ export const RouteCards = memo(function RouteCards({ plan, selectedId, onSelect 
   const tz = plan.trip.timezone
 
   return (
-    <section aria-label="Route options" className="route-cards">
+    <section aria-labelledby="routes-title" className="route-cards">
+      <h3 id="routes-title" className="section-title">
+        All routes <span>ranked by weather risk, then time</span>
+      </h3>
       {routes.map((route) => {
         const { stats } = route
         const selected = route.id === selectedId
@@ -30,16 +34,20 @@ export const RouteCards = memo(function RouteCards({ plan, selectedId, onSelect 
             <div className="route-card-head">
               <span className="route-badge">{route.id}</span>
               <span className="route-title">{route.summary ? `via ${route.summary}` : route.name}</span>
-              {route.recommended && <span className="tag">Best</span>}
+              {route.recommended ? <span className="tag">Safest</span> : <span className="rank">#{route.rank}</span>}
             </div>
             <div className="route-metrics">
               <span>
-                <strong>{formatDuration(route.duration_s)}</strong>
+                <Icon name="clock" size={13} /> <strong>{formatDuration(route.duration_s)}</strong>
               </span>
-              <span>{formatMiles(route.distance_mi)}</span>
-              <span>arrive {formatDateTime(route.arrival_utc, tz)}</span>
+              <span>
+                <Icon name="route" size={13} /> {formatMiles(route.distance_mi)}
+              </span>
+              <span>
+                <Icon name="flag" size={13} /> {formatDateTime(route.arrival_utc, tz)}
+              </span>
             </div>
-            <RiskBar stats={stats} />
+            <RiskProfile route={route} />
             <div className="route-risk">
               <span>
                 Severe <strong>{formatMiles(stats.miles_by_level.severe)}</strong>

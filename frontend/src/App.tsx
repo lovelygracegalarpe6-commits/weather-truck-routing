@@ -13,6 +13,7 @@ import { usePlan } from './hooks/usePlan'
 import { usePlayback } from './hooks/usePlayback'
 import { positionAtTime } from './lib/route'
 import { HEATMAP_LAYERS } from './map/colors'
+import { Icon } from './components/Icon'
 import type { FocusRequest, HeatmapFrame, TruckMarker } from './map/MapView'
 
 // MapLibre is most of the bundle. Loading the map as its own chunk lets the form paint
@@ -65,7 +66,7 @@ export default function App() {
 
   // On narrow screens the map sits below the form: bring it into view with new results.
   useEffect(() => {
-    if (data && window.matchMedia('(max-width: 860px)').matches) {
+    if (data && window.matchMedia('(max-width: 900px)').matches) {
       mapArea.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [data])
@@ -173,24 +174,26 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <aside className="panel" aria-label="Trip planner">
         <header className="brand">
-          <img src="/favicon.svg" alt="" width={36} height={36} />
+          <span className="brand-mark" aria-hidden="true">
+            <Icon name="route" size={20} />
+          </span>
           <div>
             <h1>Weather-Aware Truck Routing</h1>
-            <p>Compare three routes by the weather the truck will actually drive through.</p>
+            <p>The safest route, judged by the weather at the truck&apos;s ETA.</p>
           </div>
         </header>
 
         <TripForm value={form} onChange={setForm} onSubmit={submitForm} busy={busy} />
 
         <div className="examples">
-          <span>Try:</span>
+          <span>Try</span>
           {EXAMPLES.map((ex) => (
             <button
               key={ex.label}
               type="button"
-              className="link"
+              className="chip"
               disabled={busy}
               onClick={() => {
                 const next = { ...form, origin: ex.origin, destination: ex.destination }
@@ -205,7 +208,7 @@ export default function App() {
 
         {plan.error && (
           <p className="error" role="alert">
-            {plan.error}
+            <Icon name="alert" size={16} /> {plan.error}
           </p>
         )}
 
@@ -231,7 +234,7 @@ export default function App() {
         </footer>
       </aside>
 
-      <main className="map-area" ref={mapArea}>
+      <main className="map-stage" ref={mapArea}>
         <Suspense fallback={<div className="map-wrap map-placeholder" aria-hidden="true" />}>
           <MapView
             plan={data}
@@ -263,18 +266,48 @@ export default function App() {
           />
         ) : (
           !busy && (
-            <div className="map-empty">
-              <h2>Plan a trip to see routes and weather</h2>
-              <p>
-                Each route is checked at the time the truck reaches every checkpoint, then ranked by Severe miles,
-                High miles, average risk and travel time.
+            <section className="welcome" aria-labelledby="welcome-title">
+              <p className="eyebrow">
+                <Icon name="cloud" size={14} /> Weather-aware routing
               </p>
-            </div>
+              <h2 id="welcome-title">See the weather your truck will actually drive through.</h2>
+              <ol className="steps">
+                <li>
+                  <span className="step-icon">
+                    <Icon name="route" size={18} />
+                  </span>
+                  <span>
+                    <strong>Three routes</strong> from the road network, fastest first.
+                  </span>
+                </li>
+                <li>
+                  <span className="step-icon">
+                    <Icon name="clock" size={18} />
+                  </span>
+                  <span>
+                    <strong>Forecast at every checkpoint</strong> for the hour the truck gets there.
+                  </span>
+                </li>
+                <li>
+                  <span className="step-icon">
+                    <Icon name="shield" size={18} />
+                  </span>
+                  <span>
+                    <strong>Ranked by risk</strong>: Severe miles, High miles, average risk, then time.
+                  </span>
+                </li>
+              </ol>
+              <p className="welcome-cta">Enter a trip, or pick one of the example trips to start.</p>
+            </section>
           )
         )}
         {busy && (
           <div className="map-loading" role="status">
-            <span className="spinner" /> Finding routes and checking the forecast along each one…
+            <span className="radar" aria-hidden="true" />
+            <span>
+              <strong>Planning your trip</strong>
+              Finding routes and checking the forecast at every checkpoint…
+            </span>
           </div>
         )}
       </main>

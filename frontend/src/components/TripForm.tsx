@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import type { IntervalMiles } from '../api/types'
+import { Icon } from './Icon'
 import { PlaceInput, type PlaceValue } from './PlaceInput'
 
 export interface TripFormState {
@@ -32,11 +33,11 @@ export const TripForm = memo(function TripForm({ value, onChange, onSubmit, busy
         onSubmit()
       }}
     >
-      <div className="places">
+      <div className="places" role="group" aria-label="Trip">
         <PlaceInput
           label="Origin"
           marker="origin"
-          placeholder="City or address"
+          placeholder="Origin — city or address"
           value={value.origin}
           onChange={(v) => set('origin', v)}
         />
@@ -47,17 +48,18 @@ export const TripForm = memo(function TripForm({ value, onChange, onSubmit, busy
           aria-label="Swap origin and destination"
           onClick={() => onChange({ ...value, origin: value.destination, destination: value.origin })}
         >
-          ⇅
+          <Icon name="swap" size={15} />
         </button>
         <PlaceInput
           label="Destination"
           marker="destination"
-          placeholder="City or address"
+          placeholder="Destination — city or address"
           value={value.destination}
           onChange={(v) => set('destination', v)}
         />
       </div>
 
+      <div className="form-grid">
       <div className="field">
         <label htmlFor="departure">Departure</label>
         <div className="inline">
@@ -104,8 +106,9 @@ export const TripForm = memo(function TripForm({ value, onChange, onSubmit, busy
             </button>
           ))}
         </div>
-        <p className="hint">Heavier loads raise wind risk above 30,000 lb and 40,000 lb.</p>
       </div>
+      </div>
+      <p className="hint">Wind risk rises for loads over 30,000 lb and 40,000 lb.</p>
 
       <div className="field">
         <span className="label" id="interval-label">
@@ -133,7 +136,9 @@ export const TripForm = memo(function TripForm({ value, onChange, onSubmit, busy
             <span className="spinner" aria-hidden="true" /> Checking routes &amp; weather…
           </>
         ) : (
-          'Find the safest route'
+          <>
+            <Icon name="spark" size={17} /> Find the safest route
+          </>
         )}
       </button>
     </form>

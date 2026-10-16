@@ -2,6 +2,7 @@ import type { HeatmapLayerKey } from '../api/types'
 import { formatDateTime, formatHoursOffset } from '../lib/format'
 import { HEATMAP_LAYERS, legendGradient } from '../map/colors'
 import type { Status } from '../hooks/usePlan'
+import { Icon } from './Icon'
 
 interface Props {
   hours: number
@@ -38,9 +39,9 @@ export function TimelineControl(props: Props) {
           aria-label={playing ? 'Pause forecast animation' : 'Play forecast animation'}
           disabled={props.status !== 'success'}
         >
-          {playing ? '❚❚' : '▶'}
+          <Icon name={playing ? 'pause' : 'play'} size={18} />
         </button>
-        <div className="slider">
+        <div className="slider" style={{ '--fill': `${(hours / maxHours) * 100}%` } as React.CSSProperties}>
           <input
             type="range"
             min={0}
@@ -95,11 +96,16 @@ export function TimelineControl(props: Props) {
           <span className="legend-unit">{spec.unit}</span>
         </div>
         <label className="toggle">
-          <input type="checkbox" checked={visible} onChange={(e) => onVisible(e.target.checked)} />
+          <input type="checkbox" role="switch" checked={visible} onChange={(e) => onVisible(e.target.checked)} />
+          <span className="switch" aria-hidden="true" />
           Heatmap
         </label>
       </div>
-      {props.status === 'loading' && <p className="timeline-status">Loading corridor forecast…</p>}
+      {props.status === 'loading' && (
+        <p className="timeline-status">
+          <span className="spinner small" aria-hidden="true" /> Loading the corridor forecast…
+        </p>
+      )}
       {props.status === 'error' && <p className="timeline-status error">Heatmap unavailable: {props.error}</p>}
     </div>
   )
