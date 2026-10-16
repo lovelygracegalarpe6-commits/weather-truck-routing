@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import socket
 from functools import lru_cache
 from typing import Any
 
 import requests
+import urllib3.util.connection
 from django.conf import settings
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -15,16 +17,25 @@ from planner.errors import UpstreamError
 
 logger = logging.getLogger(__name__)
 
+# A stalled connection/TLS handshake should fail fast and be retried; slow responses
+# (long routes) get the full read timeout.
+CONNECT_TIMEOUT_SECONDS = 4.0
+
 
 @lru_cache(maxsize=1)
 def session() -> requests.Session:
+    if settings.HTTP_FORCE_IPV4:
+        # Some networks advertise IPv6 but stall TLS handshakes over it.
+        urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
+
     s = requests.Session()
     retry = Retry(
         total=2,
         backoff_factor=0.5,
-        status_forcelist=(429, 500, 502, 503, 504),
+        # 429s are not retried: the free APIs' windows are a minute long, so waiting
+        # here would just hang the request. The caller gets a clear message instead.
+        status_forcelist=(500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
-        respect_retry_after_header=True,
     )
     adapter = HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=16)
     s.mount("https://", adapter)
@@ -36,7 +47,9 @@ def session() -> requests.Session:
 def get_json(url: str, params: dict[str, Any], provider: str) -> Any:
     """GET a JSON document or raise UpstreamError with a user-safe message."""
     try:
-        response = session().get(url, params=params, timeout=settings.HTTP_TIMEOUT_SECONDS)
+        response = session().get(
+            url, params=params, timeout=(CONNECT_TIMEOUT_SECONDS, settings.HTTP_TIMEOUT_SECONDS)
+        )
     except requests.RequestException as exc:
         raise UpstreamError(f"{provider} is unreachable right now. Please try again.") from exc
 

@@ -7,7 +7,13 @@ locally, in tests and in production without edits.
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Local development convenience; real environments set variables directly.
+load_dotenv(BASE_DIR / ".env")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -111,10 +117,10 @@ LOGGING = {
 # --- Domain configuration -------------------------------------------------------------
 
 # Identifies us to the free public APIs (their usage policies require it).
-HTTP_USER_AGENT = os.environ.get(
-    "HTTP_USER_AGENT", "weather-aware-truck-routing/1.0 (+https://github.com/)"
-)
+HTTP_USER_AGENT = os.environ.get("HTTP_USER_AGENT", "weather-aware-truck-routing/1.0")
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "20"))
+# Work around networks whose IPv6 path stalls TLS handshakes.
+HTTP_FORCE_IPV4 = env_bool("HTTP_FORCE_IPV4", default=False)
 
 OSRM_BASE_URL = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org")
 PHOTON_BASE_URL = os.environ.get("PHOTON_BASE_URL", "https://photon.komoot.io")
@@ -124,5 +130,8 @@ OPEN_METEO_BASE_URL = os.environ.get("OPEN_METEO_BASE_URL", "https://api.open-me
 TRUCK_MAX_SPEED_MPH = float(os.environ.get("TRUCK_MAX_SPEED_MPH", "65"))
 # Which wind metric drives the wind risk level: "sustained" or "gust".
 WIND_METRIC = os.environ.get("WIND_METRIC", "sustained")
-# Upper bound on distinct weather locations requested for one heatmap.
-HEATMAP_MAX_CELLS = int(os.environ.get("HEATMAP_MAX_CELLS", "320"))
+if WIND_METRIC not in {"sustained", "gust"}:
+    raise ImproperlyConfigured("WIND_METRIC must be 'sustained' or 'gust'")
+# Upper bound on weather locations per heatmap. Together with a plan's checkpoints this
+# stays inside Open-Meteo's free 600 calls/minute.
+HEATMAP_MAX_CELLS = int(os.environ.get("HEATMAP_MAX_CELLS", "220"))

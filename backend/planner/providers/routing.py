@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.core.cache import cache
 
 from planner.domain.geo import LonLat, Track, build_track, haversine_m, shared_fraction
 from planner.errors import NoRouteError
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 MAX_DURATION_RATIO = 1.6  # alternatives may be at most 60% slower than the fastest
 MAX_SHARED_FRACTION = 0.8  # ...and must not run along an existing route for >80% of it
 VIA_OFFSETS = (0.15, -0.15, 0.3, -0.3)  # fraction of straight-line distance, left/right
+CACHE_SECONDS = 60 * 60
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,21 @@ def _via_points(origin: LonLat, destination: LonLat, fastest: Track) -> list[Lon
 
 def fetch_route_options(
     origin: LonLat, destination: LonLat, max_speed_mph: float, wanted: int = 3
+) -> list[RouteOption]:
+    """Up to `wanted` distinct routes, fastest first. Cached: road networks rarely change."""
+    key = (
+        f"routes:{origin[0]:.5f},{origin[1]:.5f}:{destination[0]:.5f},{destination[1]:.5f}"
+        f":{max_speed_mph}:{wanted}"
+    )
+    options = cache.get(key)
+    if options is None:
+        options = _find_route_options(origin, destination, max_speed_mph, wanted)
+        cache.set(key, options, timeout=CACHE_SECONDS)
+    return options
+
+
+def _find_route_options(
+    origin: LonLat, destination: LonLat, max_speed_mph: float, wanted: int
 ) -> list[RouteOption]:
     routes = _request([origin, destination], alternatives=wanted)
     options: list[RouteOption] = []

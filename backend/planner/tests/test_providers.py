@@ -147,9 +147,10 @@ def test_missing_values_yield_no_sample():
     assert s.sample_at(1 * H) is None
 
 
-def test_snap_groups_nearby_points():
-    assert weather.snap((41.8781, -87.6298)) == (41.9, -87.65)
-    assert weather.snap((41.8749, -87.6251)) == (41.85, -87.65)
+def test_snap_groups_nearby_points_on_a_tenth_degree_lattice():
+    assert weather.snap((41.8781, -87.6298)) == (41.9, -87.6)
+    assert weather.snap((41.8649, -87.6551)) == (41.9, -87.7)
+    assert weather.snap((36.04, -86.96)) == (36.0, -87.0)
 
 
 def test_parse_sums_rain_and_showers():
@@ -170,30 +171,30 @@ def test_parse_sums_rain_and_showers():
     assert parsed.snow_in_hr == (0, 0.2)
 
 
-def test_fetch_hourly_batches_dedupes_and_caches(monkeypatch):
+def test_fetch_forecasts_batches_dedupes_and_caches(monkeypatch):
     requested = []
 
-    def fake_batch(points, start, end):
+    def fake_batch(points):
         requested.append(list(points))
         return [series() for _ in points]
 
     monkeypatch.setattr(weather, "_fetch_batch", fake_batch)
     points = [(float(i), 0.0) for i in range(150)] + [(0.0, 0.0)]
 
-    first = weather.fetch_hourly(points, 0, 2 * H)
-    again = weather.fetch_hourly(points[:10], 0, 2 * H)
+    first = weather.fetch_forecasts(points)
+    again = weather.fetch_forecasts(points[:10])
 
     assert len(first) == 150
-    assert [len(b) for b in requested] == [100, 50]
-    assert len(again) == 10 and len(requested) == 2  # served from cache
+    assert sorted(len(b) for b in requested) == [25] * 6
+    assert len(again) == 10 and len(requested) == 6  # served from cache
 
 
-def test_fetch_hourly_refuses_trips_that_exceed_the_rate_limit(monkeypatch):
+def test_fetch_forecasts_refuses_trips_that_exceed_the_rate_limit(monkeypatch):
     monkeypatch.setattr(weather, "_fetch_batch", lambda *a: pytest.fail("should not fetch"))
     points = [(float(i) / 100, 0.0) for i in range(weather.MAX_LOCATIONS + 1)]
 
     with pytest.raises(InvalidTripError):
-        weather.fetch_hourly(points, 0, H)
+        weather.fetch_forecasts(points)
 
 
 # --- geocoding -------------------------------------------------------------------------
@@ -237,3 +238,20 @@ def test_search_places_ignores_tiny_queries(monkeypatch):
     monkeypatch.setattr(geocoding, "get_json", lambda *a, **k: pytest.fail("no request"))
 
     assert geocoding.search_places(" a ") == []
+
+
+def test_route_options_are_cached(monkeypatch):
+    calls = []
+
+    def fake_request(points, alternatives):
+        calls.append(points)
+        return [osrm_route([(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)], 3600)]
+
+    monkeypatch.setattr(routing, "_request", fake_request)
+    monkeypatch.setattr(routing, "_via_points", lambda *a: [])
+
+    first = routing.fetch_route_options((0, 0), (1, 0), max_speed_mph=65)
+    second = routing.fetch_route_options((0, 0), (1, 0), max_speed_mph=65)
+
+    assert len(calls) == 1
+    assert first == second

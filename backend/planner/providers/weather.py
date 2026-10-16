@@ -8,12 +8,10 @@ Units requested from the API match the risk rules directly: mph and inches.
 
 from __future__ import annotations
 
-import math
 from bisect import bisect_left
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from django.conf import settings
 from django.core.cache import cache
@@ -24,10 +22,17 @@ from planner.errors import InvalidTripError, UpstreamError
 from .http import get_json
 
 HOUR = 3600
-BATCH_SIZE = 100  # locations per HTTP request (keeps URLs well under limits)
-MAX_WORKERS = 4
-CACHE_SECONDS = 30 * 60  # forecasts update roughly hourly
-MAX_LOCATIONS = 600  # Open-Meteo free tier allows 600 calls/minute
+# Small batches in parallel: Open-Meteo latency grows with locations per request.
+BATCH_SIZE = 25
+MAX_WORKERS = 8
+CACHE_SECONDS = 60 * 60  # models update hourly at best
+# The free tier counts every location as one call: 600 per minute.
+MAX_LOCATIONS = 600
+# One fixed window per location: departures may be up to 6 h in the past or 7 days
+# ahead, plus up to ~2 days of driving.
+PAST_HOURS = 8
+FORECAST_HOURS = 9 * 24
+SNAP_DEG = 0.1
 HOURLY_VARS = "wind_speed_10m,wind_gusts_10m,rain,showers,snowfall"
 
 LatLon = tuple[float, float]
@@ -72,10 +77,11 @@ def _lerp(a: float | None, b: float | None, f: float) -> float | None:
     return a + (b - a) * f
 
 
-def snap(point: LatLon, resolution_deg: float = 0.05) -> LatLon:
+def snap(point: LatLon, resolution_deg: float = SNAP_DEG) -> LatLon:
     """Snap to a lattice so nearby checkpoints share a forecast (and a cache entry).
 
-    0.05 deg is ~5 km, comparable to the forecast models' own grid spacing.
+    0.1 deg is ~11 km, so a checkpoint's forecast comes from at most ~7 km away;
+    the heatmap grid uses multiples of the same lattice and shares cache entries.
     """
     lat, lon = point
     return (
@@ -84,12 +90,8 @@ def snap(point: LatLon, resolution_deg: float = 0.05) -> LatLon:
     )
 
 
-def _iso_hour(t: float) -> str:
-    return datetime.fromtimestamp(t, tz=UTC).strftime("%Y-%m-%dT%H:00")
-
-
-def _cache_key(point: LatLon, start: str, end: str) -> str:
-    return f"wx:{point[0]:.4f}:{point[1]:.4f}:{start}:{end}"
+def _cache_key(point: LatLon) -> str:
+    return f"wx:{point[0]:.4f}:{point[1]:.4f}"
 
 
 def _parse(item: dict) -> HourlySeries:
@@ -108,7 +110,7 @@ def _parse(item: dict) -> HourlySeries:
     )
 
 
-def _fetch_batch(points: Sequence[LatLon], start: str, end: str) -> list[HourlySeries]:
+def _fetch_batch(points: Sequence[LatLon]) -> list[HourlySeries]:
     payload = get_json(
         f"{settings.OPEN_METEO_BASE_URL}/v1/forecast",
         {
@@ -119,8 +121,8 @@ def _fetch_batch(points: Sequence[LatLon], start: str, end: str) -> list[HourlyS
             "precipitation_unit": "inch",
             "timeformat": "unixtime",
             "timezone": "GMT",
-            "start_hour": start,
-            "end_hour": end,
+            "past_hours": PAST_HOURS,
+            "forecast_hours": FORECAST_HOURS,
         },
         provider="Weather service",
     )
@@ -130,18 +132,17 @@ def _fetch_batch(points: Sequence[LatLon], start: str, end: str) -> list[HourlyS
     return [_parse(item) for item in items]
 
 
-def fetch_hourly(
-    points: Sequence[LatLon], start_unix: float, end_unix: float
-) -> dict[LatLon, HourlySeries]:
-    """Hourly series covering [start, end] for each (already snapped) point."""
-    start = _iso_hour(math.floor(start_unix / HOUR) * HOUR - HOUR)
-    end = _iso_hour(math.ceil(end_unix / HOUR) * HOUR + HOUR)
+def fetch_forecasts(points: Sequence[LatLon]) -> dict[LatLon, HourlySeries]:
+    """Hourly series for each (already snapped) point over the whole planning window.
 
+    The window is the same for every request, so a cached location serves any
+    departure time: changing departure or load weight costs no extra API calls.
+    """
     unique = list(dict.fromkeys(points))
     result: dict[LatLon, HourlySeries] = {}
     missing = []
     for p in unique:
-        hit = cache.get(_cache_key(p, start, end))
+        hit = cache.get(_cache_key(p))
         if hit is None:
             missing.append(p)
         else:
@@ -155,12 +156,10 @@ def fetch_hourly(
 
     batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        for batch, series_list in zip(
-            batches, pool.map(lambda b: _fetch_batch(b, start, end), batches), strict=True
-        ):
+        for batch, series_list in zip(batches, pool.map(_fetch_batch, batches), strict=True):
             for p, series in zip(batch, series_list, strict=True):
                 result[p] = series
-                cache.set(_cache_key(p, start, end), series, timeout=CACHE_SECONDS)
+                cache.set(_cache_key(p), series, timeout=CACHE_SECONDS)
     return result
 
 
