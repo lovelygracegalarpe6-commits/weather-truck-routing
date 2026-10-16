@@ -90,8 +90,10 @@ h3 {
   min-height: 0;
 }
 
+/* `.map-wrap .map` outranks maplibre-gl.css's `.maplibregl-map { position: relative }`,
+   which arrives later now that the map is a lazy chunk (same specificity would lose). */
 .map-wrap,
-.map {
+.map-wrap .map {
   position: absolute;
   inset: 0;
 }
