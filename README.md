@@ -132,13 +132,15 @@ Severe or No Travel miles.
 - **Frontend:** renders the grid into an image client-side:
   - bilinear interpolation, with rows re-projected to Web Mercator so the image lines
     up with the basemap;
-  - soft corridor edges from a blurred coverage mask;
+  - opacity from each pixel's distance to the nearest route, computed once per heatmap,
+    so the corridor is a smooth band along the roads;
   - blending between neighbouring hours, so scrubbing and playback are continuous.
 - The pixels are handed directly to MapLibre's image source (`updateImage({image})`):
   no PNG encoding, no network.
-- Each slider tick costs **about 3 ms of JS** in the production build. Sidebar
+- Each slider tick costs **about 1.5 ms of JS** in the production build. Sidebar
   components are memoised, so only the map, the timeline and the current checkpoint row
   update.
+- The map library is a separate, lazily loaded chunk, so the form paints first.
 - Truck markers on every route move with the slider. Hovering the map shows the value
   under the cursor.
 
@@ -212,8 +214,8 @@ Configuration is read from environment variables (see `backend/.env.example`):
 ## Tests and quality
 
 ```bash
-cd backend  && ruff check . && ruff format --check . && pytest        # 102 tests
-cd frontend && npm run lint && npm run typecheck && npm test            # unit tests
+cd backend  && ruff check . && ruff format --check . && pytest        # 108 tests
+cd frontend && npm run lint && npm run typecheck && npm test            # 15 tests
 ```
 
 - **Backend tests** cover:
@@ -227,6 +229,20 @@ cd frontend && npm run lint && npm run typecheck && npm test            # unit t
   blending) and the route geometry and time math.
 - **CI** (`.github/workflows/ci.yml`) runs all of the above, builds the Docker image and
   smoke-tests it.
+
+## Performance
+
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the full report and
+[perf/](perf/README.md) has the scripts. Measured on a 2013 dual-core with
+software-only WebGL, so these are worst-case numbers:
+
+| Metric | Result |
+| --- | --- |
+| First plan | ~6 s, dominated by OSRM and the weather API |
+| Re-plan with a new load or departure | 35–200 ms, from cache, with no upstream calls |
+| Slider | ~1.5 ms of JS per tick |
+| Playback | ~28 fps, with flat memory |
+| JS on first load | 80 KB gzipped |
 
 ## Deployment
 
