@@ -13,7 +13,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from planner.domain.checkpoints import CheckpointPosition, sample_checkpoints
-from planner.domain.geo import METERS_PER_MILE, haversine_m, simplify_indices
+from planner.domain.geo import METERS_PER_MILE, haversine_m
 from planner.domain.recommendation import (
     RouteRiskSummary,
     explain,
@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 MAX_DAYS_AHEAD = 7  # keeps whole trips inside the 16-day forecast with room to spare
 MAX_HOURS_IN_PAST = 6
 MIN_TRIP_KM = 1.0
-PATH_TOLERANCE_M = 25.0  # simplification for the map; checkpoints use the full track
 ROUTE_IDS = "ABC"
 
 
@@ -117,7 +116,7 @@ def _route_payload(
     summary: RouteRiskSummary,
 ) -> dict:
     track = option.track
-    keep = simplify_indices(track.coords, PATH_TOLERANCE_M)
+    keep = option.display_indices
     return {
         "id": route_id,
         "name": summary.name,

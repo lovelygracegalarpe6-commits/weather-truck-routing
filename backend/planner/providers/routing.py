@@ -11,12 +11,20 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from django.conf import settings
 from django.core.cache import cache
 
-from planner.domain.geo import LonLat, Track, build_track, haversine_m, shared_fraction
+from planner.domain.geo import (
+    LonLat,
+    Track,
+    build_track,
+    haversine_m,
+    shared_fraction,
+    simplify_indices,
+)
 from planner.errors import NoRouteError
 
 from .http import get_json
@@ -26,7 +34,9 @@ logger = logging.getLogger(__name__)
 MAX_DURATION_RATIO = 1.6  # alternatives may be at most 60% slower than the fastest
 MAX_SHARED_FRACTION = 0.8  # ...and must not run along an existing route for >80% of it
 VIA_OFFSETS = (0.15, -0.15, 0.3, -0.3)  # fraction of straight-line distance, left/right
+VIA_BATCH = 2  # via candidates requested concurrently (one left, one right of the route)
 CACHE_SECONDS = 60 * 60
+DISPLAY_TOLERANCE_M = 25.0  # map-line simplification; checkpoints use the full track
 
 
 @dataclass(frozen=True)
@@ -34,6 +44,14 @@ class RouteOption:
     track: Track
     summary: str  # major roads, e.g. "I 65, I 57"
     source: str  # "osrm" or "osrm-via"
+    # Vertices kept for drawing the route. Computed once here so it is cached with the
+    # route: simplification is the most expensive step of re-planning a long trip.
+    display_indices: tuple[int, ...]
+
+    @classmethod
+    def from_track(cls, track: Track, summary: str, source: str) -> RouteOption:
+        indices = tuple(simplify_indices(track.coords, DISPLAY_TOLERANCE_M))
+        return cls(track=track, summary=summary, source=source, display_indices=indices)
 
 
 def _route_url(points: Sequence[LonLat]) -> str:
@@ -105,7 +123,7 @@ def _to_option(route: dict, source: str, max_speed_mph: float) -> RouteOption:
         max_speed_mph=max_speed_mph,
     )
     summary = ", ".join(leg["summary"] for leg in route["legs"] if leg.get("summary"))
-    return RouteOption(track=track, summary=_dedupe_roads(summary), source=source)
+    return RouteOption.from_track(track, _dedupe_roads(summary), source)
 
 
 def _dedupe_roads(summary: str) -> str:
@@ -168,18 +186,30 @@ def _find_route_options(
             options.append(option)
 
     fastest = min(options, key=lambda o: o.track.duration_s)
-    for via in _via_points(origin, destination, fastest.track):
+
+    def via_route(via: LonLat) -> dict | None:
+        try:
+            return _request([origin, via, destination], alternatives=0)[0]
+        except NoRouteError:
+            return None  # via point in a lake, desert, across a border...
+
+    vias = _via_points(origin, destination, fastest.track)
+    # Request candidates in concurrent pairs (each pair costs one round trip), but judge
+    # them in a fixed order so the chosen routes never depend on response timing.
+    for i in range(0, len(vias), VIA_BATCH):
         if len(options) >= wanted:
             break
-        try:
-            route = _request([origin, via, destination], alternatives=0)[0]
-        except NoRouteError:
-            continue  # via point in a lake, desert, across a border...
-        candidate = _to_option(route, "osrm-via", max_speed_mph)
-        too_slow = candidate.track.duration_s > MAX_DURATION_RATIO * fastest.track.duration_s
-        if not too_slow and _is_distinct(candidate, options):
-            options.append(candidate)
-        else:
-            logger.debug("Rejected via candidate %s (too_slow=%s)", via, too_slow)
+        batch = vias[i : i + VIA_BATCH]
+        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+            routes = list(pool.map(via_route, batch))
+        for via, route in zip(batch, routes, strict=True):
+            if route is None or len(options) >= wanted:
+                continue
+            candidate = _to_option(route, "osrm-via", max_speed_mph)
+            too_slow = candidate.track.duration_s > MAX_DURATION_RATIO * fastest.track.duration_s
+            if not too_slow and _is_distinct(candidate, options):
+                options.append(candidate)
+            else:
+                logger.debug("Rejected via candidate %s (too_slow=%s)", via, too_slow)
 
     return sorted(options, key=lambda o: o.track.duration_s)[:wanted]

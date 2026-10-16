@@ -50,13 +50,18 @@ def _densify(path: Sequence[LonLat], max_gap_deg: float) -> Iterator[LonLat]:
         yield path[-1]
 
 
+def _km_per_deg_lon(paths: Sequence[Sequence[LonLat]]) -> float:
+    lats = [lat for path in paths for _, lat in path]
+    mid_lat = (min(lats) + max(lats)) / 2
+    return KM_PER_DEG_LAT * max(math.cos(math.radians(mid_lat)), 0.1)
+
+
 def _grid_for_step(
     paths: Sequence[Sequence[LonLat]], step: float, radius_km: float
 ) -> CorridorGrid:
     lons = [lon for path in paths for lon, _ in path]
     lats = [lat for path in paths for _, lat in path]
-    mid_lat = (min(lats) + max(lats)) / 2
-    km_per_deg_lon = KM_PER_DEG_LAT * max(math.cos(math.radians(mid_lat)), 0.1)
+    km_per_deg_lon = _km_per_deg_lon(paths)
     pad_lat, pad_lon = radius_km / KM_PER_DEG_LAT, radius_km / km_per_deg_lon
 
     west = math.floor((min(lons) - pad_lon) / step) * step
@@ -67,17 +72,32 @@ def _grid_for_step(
 
     kx, ky = math.ceil(pad_lon / step), math.ceil(pad_lat / step)
     r2 = radius_km * radius_km
-    nodes: set[int] = set()
+    inside = bytearray(nx * ny)  # cheaper than a set: neighbouring samples overlap heavily
     for path in paths:
-        for lon, lat in _densify(path, step / 3):
+        for lon, lat in _densify(path, step / 2):
             cx, cy = round((lon - west) / step), round((lat - south) / step)
-            for iy in range(max(cy - ky, 0), min(cy + ky, ny - 1) + 1):
+            x0, x1 = (cx - kx if cx > kx else 0), (cx + kx if cx + kx < nx else nx - 1)
+            y0, y1 = (cy - ky if cy > ky else 0), (cy + ky if cy + ky < ny else ny - 1)
+            for iy in range(y0, y1 + 1):
                 dy = (south + iy * step - lat) * KM_PER_DEG_LAT
-                for ix in range(max(cx - kx, 0), min(cx + kx, nx - 1) + 1):
+                row = iy * nx
+                for ix in range(x0, x1 + 1):
                     dx = (west + ix * step - lon) * km_per_deg_lon
                     if dx * dx + dy * dy <= r2:
-                        nodes.add(iy * nx + ix)
-    return CorridorGrid(spec=spec, nodes=tuple(sorted(nodes)))
+                        inside[row + ix] = 1
+    return CorridorGrid(spec=spec, nodes=tuple(i for i, v in enumerate(inside) if v))
+
+
+def _estimated_nodes(paths: Sequence[Sequence[LonLat]], step: float, radius_km: float) -> float:
+    """Buffer area of every path over the cell area (overlap between paths counted twice)."""
+    kx = _km_per_deg_lon(paths)
+    length_km = sum(
+        math.hypot((lon1 - lon0) * kx, (lat1 - lat0) * KM_PER_DEG_LAT)
+        for path in paths
+        for (lon0, lat0), (lon1, lat1) in zip(path, path[1:], strict=False)
+    )
+    area = length_km * 2 * radius_km + len(paths) * math.pi * radius_km**2
+    return area / ((step * KM_PER_DEG_LAT) * (step * kx))
 
 
 def build_corridor(
@@ -87,11 +107,22 @@ def build_corridor(
 ) -> CorridorGrid:
     if not paths or not any(paths):
         raise ValueError("At least one path is required")
+    # Keep the corridor at least ~3 nodes wide at coarse spacings.
+    radii = [max(radius_km, 1.5 * step * KM_PER_DEG_LAT) for step in STEPS_DEG]
+    # Building a grid is the expensive part, so skip spacings that clearly cannot fit.
+    # The estimate over-counts where routes overlap, so start two spacings finer than it
+    # suggests and let the exact count decide.
+    first_fit = next(
+        (
+            i
+            for i, step in enumerate(STEPS_DEG)
+            if _estimated_nodes(paths, step, radii[i]) <= max_nodes
+        ),
+        len(STEPS_DEG) - 1,
+    )
     grid = None
-    for step in STEPS_DEG:
-        # Keep the corridor at least ~3 nodes wide at coarse spacings.
-        radius = max(radius_km, 1.5 * step * KM_PER_DEG_LAT)
-        grid = _grid_for_step(paths, step, radius)
+    for i in range(max(first_fit - 2, 0), len(STEPS_DEG)):
+        grid = _grid_for_step(paths, STEPS_DEG[i], radii[i])
         if len(grid.nodes) <= max_nodes:
             return grid
     assert grid is not None

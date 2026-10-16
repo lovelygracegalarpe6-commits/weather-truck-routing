@@ -19,10 +19,8 @@ NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 
 def straight(lat: float, hours: float) -> RouteOption:
     coords = [(-100 + i * 0.02, lat) for i in range(101)]  # ~105 mi east-west
-    return RouteOption(
-        track=build_track(coords, total_duration_s=hours * H),
-        summary=f"Road {lat}",
-        source="osrm",
+    return RouteOption.from_track(
+        build_track(coords, total_duration_s=hours * H), summary=f"Road {lat}", source="osrm"
     )
 
 

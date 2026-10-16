@@ -52,28 +52,29 @@ def test_via_route_spur_is_trimmed_when_building_option():
 def test_fetch_route_options_tops_up_with_distinct_via_routes(monkeypatch):
     north = [(0.0, 0.0), (0.5, 0.2), (1.0, 0.0)]
     south = [(0.0, 0.0), (0.5, -0.2), (1.0, 0.0)]
+    far_north = [(0.0, 0.0), (0.5, 0.4), (1.0, 0.0)]
     straight = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)]
-    duplicate = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)]
-    calls = []
+    vias = []
 
     def fake_request(points, alternatives):
-        calls.append(points)
         if len(points) == 2:
-            return [osrm_route(straight, 3600), osrm_route(duplicate, 3700)]
-        # First via candidate repeats the straight route (rejected), then distinct ones.
-        return [
-            [osrm_route(duplicate, 3600)],
-            [osrm_route(north, 4000)],
-            [osrm_route(south, 4100)],
-        ][len(calls) - 2]
+            return [osrm_route(straight, 3600), osrm_route(straight, 3700)]  # duplicate
+        via_lat = points[1][1]
+        vias.append(via_lat)
+        if 0 < via_lat < 0.2:
+            return [osrm_route(straight, 3600)]  # near-left detour snaps back: rejected
+        if via_lat < -0.2:
+            return [osrm_route(far_north, 4300)]  # far-right: not needed once we have 3
+        return [osrm_route(south if via_lat < 0 else north, 4000 if via_lat < 0 else 4100)]
 
     monkeypatch.setattr(routing, "_request", fake_request)
 
     options = routing.fetch_route_options((0, 0), (1, 0), max_speed_mph=1000)
 
-    assert [o.track.coords[1] for o in options] == [(0.5, 0.0), (0.5, 0.2), (0.5, -0.2)]
+    assert [o.track.coords[1] for o in options] == [(0.5, 0.0), (0.5, -0.2), (0.5, 0.2)]
     assert [o.source for o in options] == ["osrm", "osrm-via", "osrm-via"]
-    assert len(calls) == 4
+    # Two concurrent pairs of via candidates were needed: near left/right, then far.
+    assert len(vias) == 4
 
 
 def test_via_candidates_that_are_too_slow_are_rejected(monkeypatch):

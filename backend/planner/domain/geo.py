@@ -140,36 +140,83 @@ class _LocalProjection:
 
 
 def simplify_indices(coords: Sequence[LonLat], tolerance_m: float) -> list[int]:
-    """Ramer-Douglas-Peucker; returns the indices of the vertices to keep."""
+    """Simplify a polyline for display; returns the indices of the vertices to keep.
+
+    Two passes, as in simplify-js: a radial-distance filter first drops vertices within
+    the tolerance of the last kept one (cheap, and it removes most of a router's dense
+    geometry), then Ramer-Douglas-Peucker runs on what is left.
+    """
     n = len(coords)
     if n <= 2:
         return list(range(n))
     project = _LocalProjection(sum(lat for _, lat in coords) / n)
     pts = [project(c) for c in coords]
-    keep = [False] * n
-    keep[0] = keep[-1] = True
-    stack = [(0, n - 1)]
     tol2 = tolerance_m * tolerance_m
+
+    candidates = [0]
+    lx, ly = pts[0]
+    for i in range(1, n - 1):
+        x, y = pts[i]
+        if (x - lx) * (x - lx) + (y - ly) * (y - ly) > tol2:
+            candidates.append(i)
+            lx, ly = x, y
+    candidates.append(n - 1)
+
+    m = len(candidates)
+    keep = [False] * m
+    keep[0] = keep[-1] = True
+    stack = [(0, m - 1)]
     while stack:
         start, end = stack.pop()
-        (x1, y1), (x2, y2) = pts[start], pts[end]
+        x1, y1 = pts[candidates[start]]
+        x2, y2 = pts[candidates[end]]
         dx, dy = x2 - x1, y2 - y1
         seg_len2 = dx * dx + dy * dy
-        worst_i, worst_d2 = -1, tol2
-        for i in range(start + 1, end):
-            px, py = pts[i]
-            if seg_len2 == 0:
-                d2 = (px - x1) ** 2 + (py - y1) ** 2
-            else:
-                t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / seg_len2))
-                d2 = (px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2
+        worst_k, worst_d2 = -1, tol2
+        for k in range(start + 1, end):
+            px, py = pts[candidates[k]]
+            ex, ey = px - x1, py - y1
+            if seg_len2 > 0:
+                t = (ex * dx + ey * dy) / seg_len2
+                t = 0.0 if t < 0 else 1.0 if t > 1 else t
+                ex -= t * dx
+                ey -= t * dy
+            d2 = ex * ex + ey * ey
             if d2 > worst_d2:
-                worst_i, worst_d2 = i, d2
-        if worst_i != -1:
-            keep[worst_i] = True
-            stack.append((start, worst_i))
-            stack.append((worst_i, end))
-    return [i for i, k in enumerate(keep) if k]
+                worst_k, worst_d2 = k, d2
+        if worst_k != -1:
+            keep[worst_k] = True
+            stack.append((start, worst_k))
+            stack.append((worst_k, end))
+    return [candidates[k] for k in range(m) if keep[k]]
+
+
+def _resample(
+    track: Track, spacing_m: float, project: _LocalProjection
+) -> list[tuple[float, float]]:
+    """Projected points every `spacing_m` along a track (plus its end), in one pass.
+
+    Walking the segments in order avoids a binary search per sample, which dominated
+    route de-duplication on long trips.
+    """
+    coords, cum = track.coords, track.cum_dist_m
+    kx, ky = project.kx, project.ky
+    out = []
+    target = 0.0
+    for i in range(len(coords) - 1):
+        d0, d1 = cum[i], cum[i + 1]
+        if d1 <= d0 or target > d1:
+            continue
+        (lon0, lat0), (lon1, lat1) = coords[i], coords[i + 1]
+        span = d1 - d0
+        while target <= d1:
+            f = (target - d0) / span
+            out.append(((lon0 + (lon1 - lon0) * f) * kx, (lat0 + (lat1 - lat0) * f) * ky))
+            target += spacing_m
+    end = project(coords[-1])
+    if not out or out[-1] != end:
+        out.append(end)
+    return out
 
 
 def shared_fraction(
@@ -181,20 +228,13 @@ def shared_fraction(
 
     # Densify b so that hashing its points by cell finds every nearby stretch of road.
     buckets: dict[tuple[int, int], list[tuple[float, float]]] = defaultdict(list)
-    spacing = tolerance_m / 2
-    d = 0.0
-    while d <= b.distance_m:
-        p = b.locate(d)
-        x, y = project((p.lon, p.lat))
+    for x, y in _resample(b, tolerance_m / 2, project):
         buckets[(int(x // cell), int(y // cell))].append((x, y))
-        d += spacing
 
-    samples = max(2, int(a.distance_m // step_m) + 1)
+    samples = _resample(a, step_m, project)
     shared = 0
     tol2 = tolerance_m * tolerance_m
-    for k in range(samples):
-        p = a.locate(a.distance_m * k / (samples - 1))
-        x, y = project((p.lon, p.lat))
+    for x, y in samples:
         cx, cy = int(x // cell), int(y // cell)
         if any(
             (x - bx) ** 2 + (y - by) ** 2 <= tol2
@@ -203,4 +243,4 @@ def shared_fraction(
             for bx, by in buckets.get((gx, gy), ())
         ):
             shared += 1
-    return shared / samples
+    return shared / len(samples)
