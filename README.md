@@ -247,8 +247,27 @@ software-only WebGL, so these are worst-case numbers:
 
 ## Deployment
 
-The Dockerfile builds the React app and serves it **from Django**, so there is one
-service, one URL and no CORS:
+**Vercel (Services).** `vercel.json` defines two services in one project, on one
+domain:
+
+| Service | Root | Public path | What it is |
+| --- | --- | --- | --- |
+| `frontend` | `frontend/` | everything except `/api/` | Vite build, served from Vercel's CDN |
+| `backend` | `backend/` | `/api/(.*)` | Django as a Vercel Function; receives the full `/api/...` path |
+
+The browser calls the API with relative `/api/...` URLs, and the backend only calls
+third-party APIs, so the services don't call each other and need no bindings.
+
+To deploy: Add New → Project → import the repo. Then in Settings → Environment
+Variables, set `DJANGO_SECRET_KEY`. Hosts under `*.vercel.app` and the production
+domain are allowed automatically; add any other custom domain to
+`DJANGO_ALLOWED_HOSTS`.
+
+Caveat: each function instance has its own in-memory cache, so cached routes and
+forecasts are shared only within a warm instance.
+
+**Docker (Render or any container host).** The Dockerfile builds the React app and
+serves it **from Django**, so there is one service, one URL and no CORS:
 - Static assets are served by WhiteNoise, pre-gzipped, with immutable caching.
 - The API runs on gunicorn with threads, because the work is I/O-bound.
 

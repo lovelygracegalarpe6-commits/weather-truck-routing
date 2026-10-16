@@ -29,6 +29,12 @@ DEBUG = env_bool("DJANGO_DEBUG", default=False)
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-secret-key")
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
+if os.environ.get("VERCEL"):
+    # Vercel deployment, branch and production URLs. Custom domains other than the
+    # production one still need adding through DJANGO_ALLOWED_HOSTS.
+    ALLOWED_HOSTS += [".vercel.app"]
+    if production_host := os.environ.get("VERCEL_PROJECT_PRODUCTION_URL"):
+        ALLOWED_HOSTS.append(production_host)
 CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [

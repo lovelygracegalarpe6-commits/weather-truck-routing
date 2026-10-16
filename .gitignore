@@ -31,3 +31,6 @@ Thumbs.db
 # Performance test output
 perf/results/
 perf/node_modules/
+
+# Vercel CLI local state
+.vercel/

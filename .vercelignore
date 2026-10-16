@@ -1,0 +1,10 @@
+# Keep local secrets and build artefacts out of CLI deployments (`vercel deploy`).
+# Git-based deployments only see committed files, which already exclude these.
+.env
+**/.env
+*.pdf
+backend/.venv
+backend/frontend_dist
+frontend/node_modules
+frontend/dist
+perf/
