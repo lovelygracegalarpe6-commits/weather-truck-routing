@@ -27,3 +27,7 @@ frontend/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Performance test output
+perf/results/
+perf/node_modules/
