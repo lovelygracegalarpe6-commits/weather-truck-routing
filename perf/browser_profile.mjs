@@ -12,10 +12,24 @@ const chrome = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Applic
 
 const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--ignore-gpu-blocklist', '--no-proxy-server'] })
 const page = await browser.newPage({ viewport: { width, height } })
-await page.goto(url, { waitUntil: 'load' })
-await page.getByRole('button', { name: 'Chicago → Nashville' }).click()
-await page.waitForFunction(() => document.querySelector('.timeline') && !document.querySelector('.timeline-status'), null, { timeout: 180_000 })
-await page.waitForTimeout(2000)
+// Load twice so basemap tiles and fonts come from the HTTP cache, then let the map
+// settle: profiling while tiles are still arriving measures a half-drawn map (and looked
+// ~2x faster than steady state when this script first ran).
+for (let i = 0; i < 2; i++) {
+  await page.goto(url, { waitUntil: 'load' })
+  await page.getByRole('button', { name: 'Chicago → Nashville' }).click()
+  await page.waitForFunction(() => document.querySelector('.timeline') && !document.querySelector('.timeline-status'), null, { timeout: 180_000 })
+}
+await page.waitForTimeout(5000)
+
+// Guard: a hidden or collapsed map renders nothing and makes every frame look cheap.
+const mapSize = await page.evaluate(() => {
+  const r = document.querySelector('.maplibregl-canvas')?.getBoundingClientRect()
+  return r ? [Math.round(r.width), Math.round(r.height)] : null
+})
+if (!mapSize || mapSize[0] < 300 || mapSize[1] < 300) {
+  throw new Error(`Map canvas is not visible (${mapSize}); refusing to report frame timings`)
+}
 
 const cdp = await page.context().newCDPSession(page)
 await cdp.send('Profiler.enable')
@@ -44,7 +58,7 @@ for (const [id, us] of self) {
   const file = src.split('/').pop().split('?')[0]
   const bucket = !src
     ? functionName.startsWith('(') ? functionName : 'native/browser'
-    : file.includes('maplibre-gl-worker') ? 'map worker' : /^index-.*\.js$/.test(file) ? 'app bundle (React + MapLibre + our code)' : file
+    : file.includes('maplibre-gl-worker') ? 'map worker' : /^index-.*\.js$/.test(file) ? 'app chunk (React + our code)' : /^MapView-.*\.js$/.test(file) ? 'map chunk (MapLibre + MapView)' : file
   byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + us)
   const key = `${functionName || '(anonymous)'}  ${file}:${lineNumber}:${nodes.get(id).callFrame.columnNumber}`
   byFunction.set(key, (byFunction.get(key) ?? 0) + us)

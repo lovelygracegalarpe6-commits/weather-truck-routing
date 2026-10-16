@@ -136,6 +136,16 @@ async function planAndMeasure(trigger) {
 
 results.plan_cold = await planAndMeasure(() => page.getByRole('button', { name: 'Chicago → Nashville' }).click())
 
+// Guard: a hidden or collapsed map renders nothing and makes every frame look cheap.
+const mapSize = await page.evaluate(() => {
+  const r = document.querySelector('.maplibregl-canvas')?.getBoundingClientRect()
+  return r ? [Math.round(r.width), Math.round(r.height)] : null
+})
+if (!mapSize || mapSize[0] < 300 || mapSize[1] < 300) {
+  throw new Error(`Map canvas is not visible (${mapSize}); refusing to report frame timings`)
+}
+results.map_canvas_px = mapSize
+
 // 3. Slider scrubbing: synchronous JS per tick, and input-to-next-frame ---------------------
 results.scrub = await page.evaluate(async () => {
   const input = document.querySelector('.slider input')
