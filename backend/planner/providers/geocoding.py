@@ -49,6 +49,7 @@ def search_places(query: str, limit: int = 6) -> list[Place]:
         f"{settings.PHOTON_BASE_URL}/api/",
         {"q": query, "limit": limit, "lang": "en", "lat": _BIAS_LAT, "lon": _BIAS_LON},
         provider="Geocoding service",
+        read_timeout=8.0,
     )
     places: list[Place] = []
     for feature in payload.get("features", []):

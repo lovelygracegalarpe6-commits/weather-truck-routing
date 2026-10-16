@@ -44,12 +44,17 @@ def session() -> requests.Session:
     return s
 
 
-def get_json(url: str, params: dict[str, Any], provider: str) -> Any:
-    """GET a JSON document or raise UpstreamError with a user-safe message."""
+def get_json(
+    url: str, params: dict[str, Any], provider: str, read_timeout: float | None = None
+) -> Any:
+    """GET a JSON document or raise UpstreamError with a user-safe message.
+
+    `read_timeout` lets fast APIs fail (and retry) quickly instead of waiting for the
+    global HTTP_TIMEOUT_SECONDS meant for slow ones like long-distance routing.
+    """
+    timeout = (CONNECT_TIMEOUT_SECONDS, read_timeout or settings.HTTP_TIMEOUT_SECONDS)
     try:
-        response = session().get(
-            url, params=params, timeout=(CONNECT_TIMEOUT_SECONDS, settings.HTTP_TIMEOUT_SECONDS)
-        )
+        response = session().get(url, params=params, timeout=timeout)
     except requests.RequestException as exc:
         raise UpstreamError(f"{provider} is unreachable right now. Please try again.") from exc
 

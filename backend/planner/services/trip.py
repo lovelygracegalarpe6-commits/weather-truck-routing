@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -147,14 +148,16 @@ def plan_trip(request: TripRequest, now: datetime | None = None) -> dict:
     if haversine_m(origin.lonlat, destination.lonlat) < MIN_TRIP_KM * 1000:
         raise InvalidTripError("Origin and destination are the same place.")
 
-    tz_name = weather.lookup_timezone(origin.lat, origin.lon)
-    departure = resolve_departure(request.departure, tz_name, now)
-
+    # The origin's timezone and the routes are independent: fetch them concurrently.
     t0 = time.perf_counter()
-    options = routing.fetch_route_options(
-        origin.lonlat, destination.lonlat, max_speed_mph=settings.TRUCK_MAX_SPEED_MPH
-    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        tz_future = pool.submit(weather.lookup_timezone, origin.lat, origin.lon)
+        options = routing.fetch_route_options(
+            origin.lonlat, destination.lonlat, max_speed_mph=settings.TRUCK_MAX_SPEED_MPH
+        )
+        tz_name = tz_future.result()
     t1 = time.perf_counter()
+    departure = resolve_departure(request.departure, tz_name, now)
 
     route_checkpoints = [sample_checkpoints(o.track, request.interval_miles) for o in options]
     snapped = [[weather.snap((cp.lat, cp.lon)) for cp in cps] for cps in route_checkpoints]

@@ -33,6 +33,7 @@ MAX_LOCATIONS = 600
 PAST_HOURS = 8
 FORECAST_HOURS = 9 * 24
 SNAP_DEG = 0.1
+READ_TIMEOUT_SECONDS = 8.0  # normally < 2 s; fail fast and retry on a stalled connection
 HOURLY_VARS = "wind_speed_10m,wind_gusts_10m,rain,showers,snowfall"
 
 LatLon = tuple[float, float]
@@ -125,6 +126,7 @@ def _fetch_batch(points: Sequence[LatLon]) -> list[HourlySeries]:
             "forecast_hours": FORECAST_HOURS,
         },
         provider="Weather service",
+        read_timeout=READ_TIMEOUT_SECONDS,
     )
     items = payload if isinstance(payload, list) else [payload]
     if len(items) != len(points):
@@ -172,6 +174,7 @@ def lookup_timezone(lat: float, lon: float) -> str:
             f"{settings.OPEN_METEO_BASE_URL}/v1/forecast",
             {"latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}", "timezone": "auto"},
             provider="Weather service",
+            read_timeout=READ_TIMEOUT_SECONDS,
         )
         tz = payload.get("timezone") or "UTC"
         cache.set(key, tz, timeout=7 * 24 * 3600)
