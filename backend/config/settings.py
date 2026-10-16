@@ -83,6 +83,14 @@ FRONTEND_DIST_DIR = Path(os.environ.get("FRONTEND_DIST_DIR", BASE_DIR / "fronten
 WHITENOISE_ROOT = FRONTEND_DIST_DIR if FRONTEND_DIST_DIR.exists() else None
 WHITENOISE_INDEX_FILE = True
 
+
+def _is_hashed_vite_asset(path: str, url: str) -> bool:
+    # Vite fingerprints everything under /assets/, so browsers may cache it forever.
+    return url.startswith("/assets/")
+
+
+WHITENOISE_IMMUTABLE_FILE_TEST = _is_hashed_vite_asset
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOWED_ORIGINS = env_list(
