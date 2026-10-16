@@ -7,6 +7,7 @@ from planner.domain.risk import (
     classify_rain,
     classify_snow,
     classify_wind,
+    risk_level,
     wind_level_for_load,
 )
 
@@ -143,3 +144,18 @@ def test_gust_metric_uses_gust_speed():
     assert assess(weather, load_lb=0).level == L
     assert assess(weather, load_lb=0, wind_metric="gust").level == S
     assert assess(weather, load_lb=35_000, wind_metric="gust").level == N
+
+
+@pytest.mark.parametrize(
+    ("weather", "load"),
+    [
+        (sample(wind=40), 42_000),
+        (sample(wind=50), 31_000),
+        (sample(wind=26, rain=0.3, snow=0.6), 0),
+        (sample(wind=5, snow=3.5), 80_000),
+        (sample(wind=20, gust=50), 35_000),
+    ],
+)
+def test_risk_level_matches_full_assessment(weather, load):
+    for metric in ("sustained", "gust"):
+        assert risk_level(weather, load, metric) == assess(weather, load, metric).level

@@ -13,7 +13,7 @@ from django.conf import settings
 
 from planner.domain.corridor import build_corridor
 from planner.domain.geo import LonLat
-from planner.domain.risk import assess
+from planner.domain.risk import risk_level
 from planner.providers import weather
 
 from .serialization import iso_utc
@@ -35,6 +35,7 @@ def build_heatmap(
     start = departure.timestamp()
     series = [forecasts.get(p) for p in node_points]
 
+    wind_metric = settings.WIND_METRIC  # hoisted: lazy settings lookups add up in this loop
     wind, gust, rain, snow, risk = [], [], [], [], []
     for frame in range(hours + 1):
         t = start + frame * HOUR
@@ -44,10 +45,7 @@ def build_heatmap(
         rain.append([round(s.rain_in_hr, 3) if s else None for s in samples])
         snow.append([round(s.snow_in_hr, 3) if s else None for s in samples])
         risk.append(
-            [
-                int(assess(s, load_weight_lb, settings.WIND_METRIC).level) if s else None
-                for s in samples
-            ]
+            [int(risk_level(s, load_weight_lb, wind_metric)) if s else None for s in samples]
         )
 
     return {

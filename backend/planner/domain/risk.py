@@ -127,6 +127,12 @@ class RiskAssessment:
     reasons: tuple[str, ...]
 
 
+def risk_level(sample: WeatherSample, load_lb: float, wind_metric: str = "sustained") -> RiskLevel:
+    """Just the level (no reasons): the heatmap needs this for ~10k samples per request."""
+    wind, _ = wind_level_for_load(sample.wind_for(wind_metric), load_lb)
+    return max(wind, classify_rain(sample.rain_in_hr), classify_snow(sample.snow_in_hr))
+
+
 def assess(sample: WeatherSample, load_lb: float, wind_metric: str = "sustained") -> RiskAssessment:
     wind_mph = sample.wind_for(wind_metric)
     wind, load_rule = wind_level_for_load(wind_mph, load_lb)
