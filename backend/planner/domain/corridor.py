@@ -38,6 +38,7 @@ class GridSpec:
 class CorridorGrid:
     spec: GridSpec
     nodes: tuple[int, ...]  # flat indices (iy * nx + ix), ascending
+    radius_km: float  # every node lies within this distance of a route
 
 
 def _densify(path: Sequence[LonLat], max_gap_deg: float) -> Iterator[LonLat]:
@@ -85,7 +86,8 @@ def _grid_for_step(
                     dx = (west + ix * step - lon) * km_per_deg_lon
                     if dx * dx + dy * dy <= r2:
                         inside[row + ix] = 1
-    return CorridorGrid(spec=spec, nodes=tuple(i for i, v in enumerate(inside) if v))
+    nodes = tuple(i for i, v in enumerate(inside) if v)
+    return CorridorGrid(spec=spec, nodes=nodes, radius_km=radius_km)
 
 
 def _estimated_nodes(paths: Sequence[Sequence[LonLat]], step: float, radius_km: float) -> float:

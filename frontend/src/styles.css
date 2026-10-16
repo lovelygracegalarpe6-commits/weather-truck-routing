@@ -96,6 +96,10 @@ h3 {
   inset: 0;
 }
 
+.map-placeholder {
+  background: #f2f3f0; /* close to the basemap's land colour */
+}
+
 @media (max-width: 860px) {
   /* Phones/tablets: form and results first, then the map (scrolled to after planning). */
   .app {

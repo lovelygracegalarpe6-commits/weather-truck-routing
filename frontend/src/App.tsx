@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api/client'
 import type { HeatmapLayerKey, Place, PlanResponse } from './api/types'
 import { type CheckpointRef, CheckpointTable } from './components/CheckpointTable'
@@ -13,7 +13,11 @@ import { usePlan } from './hooks/usePlan'
 import { usePlayback } from './hooks/usePlayback'
 import { positionAtTime } from './lib/route'
 import { HEATMAP_LAYERS } from './map/colors'
-import { type FocusRequest, type HeatmapFrame, MapView, type TruckMarker } from './map/MapView'
+import type { FocusRequest, HeatmapFrame, TruckMarker } from './map/MapView'
+
+// MapLibre is most of the bundle. Loading the map as its own chunk lets the form paint
+// while the map library downloads and compiles in parallel.
+const MapView = lazy(() => import('./map/MapView').then((m) => ({ default: m.MapView })))
 
 const place = (label: string, lat: number, lon: number): PlaceValue => ({ text: label, place: { label, lat, lon } })
 
@@ -228,17 +232,19 @@ export default function App() {
       </aside>
 
       <main className="map-area" ref={mapArea}>
-        <MapView
-          plan={data}
-          selectedRouteId={selectedRouteId}
-          onSelectRoute={selectRoute}
-          heatmap={heatmapFrame}
-          heatmapVisible={heatmapVisible}
-          trucks={trucks}
-          highlighted={highlighted}
-          focus={focus}
-          probe={probe}
-        />
+        <Suspense fallback={<div className="map-wrap map-placeholder" aria-hidden="true" />}>
+          <MapView
+            plan={data}
+            selectedRouteId={selectedRouteId}
+            onSelectRoute={selectRoute}
+            heatmap={heatmapFrame}
+            heatmapVisible={heatmapVisible}
+            trucks={trucks}
+            highlighted={highlighted}
+            focus={focus}
+            probe={probe}
+          />
+        </Suspense>
         {data ? (
           <TimelineControl
             hours={hours}

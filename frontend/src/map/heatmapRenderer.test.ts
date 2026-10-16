@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { HeatmapResponse } from '../api/types'
+import type { HeatmapResponse, LonLat } from '../api/types'
 import { buildLut, HEATMAP_LAYERS } from './colors'
 import { HeatmapRenderer } from './heatmapRenderer'
 
@@ -7,7 +7,7 @@ import { HeatmapRenderer } from './heatmapRenderer'
 function heatmap(riskFrames: (number | null)[][], nodes = [0, 1, 2, 3, 4, 5, 6, 7, 8]): HeatmapResponse {
   const empty = riskFrames.map(() => nodes.map(() => 0))
   return {
-    grid: { west: -100, south: 40, step: 1, nx: 3, ny: 3 },
+    grid: { west: -100, south: 40, step: 1, nx: 3, ny: 3, radius_km: 150 },
     nodes,
     start_utc: '2026-10-16T13:00:00Z',
     frame_seconds: 3600,
@@ -17,10 +17,13 @@ function heatmap(riskFrames: (number | null)[][], nodes = [0, 1, 2, 3, 4, 5, 6, 
 }
 
 const uniform = (v: number | null) => Array.from({ length: 9 }, () => v)
+// A route through the middle of the grid, and one along its southern edge.
+const MIDDLE: LonLat[][] = [[[-100, 41], [-98, 41]]]
+const SOUTH: LonLat[][] = [[[-100, 40], [-98, 40]]]
 
 describe('HeatmapRenderer', () => {
   it('maps the grid onto mercator-correct corners', () => {
-    const r = new HeatmapRenderer(heatmap([uniform(0)]))
+    const r = new HeatmapRenderer(heatmap([uniform(0)]), MIDDLE)
 
     expect(r.corners).toEqual([
       [-100, 42],
@@ -28,13 +31,13 @@ describe('HeatmapRenderer', () => {
       [-98, 40],
       [-100, 40],
     ])
-    expect(r.width).toBe(16)
+    expect(r.width).toBe(8) // (nx - 1) * 4 px per cell
     // Mercator stretches latitude: 2 deg tall at ~41N is taller than 2 deg wide.
     expect(r.height).toBeGreaterThan(r.width)
   })
 
   it('colors pixels from the lookup table', () => {
-    const r = new HeatmapRenderer(heatmap([uniform(3)]))
+    const r = new HeatmapRenderer(heatmap([uniform(3)]), MIDDLE)
     const lut = buildLut(HEATMAP_LAYERS.risk.stops)
     const idx = Math.round(((3 - lut.min) / (lut.max - lut.min)) * (lut.size - 1)) * 4
 
@@ -46,7 +49,7 @@ describe('HeatmapRenderer', () => {
 
   it('leaves pixels transparent where the corridor has no nodes', () => {
     // Only the southern row is in the corridor.
-    const r = new HeatmapRenderer(heatmap([[4, 4, 4]], [0, 1, 2]))
+    const r = new HeatmapRenderer(heatmap([[4, 4, 4]], [0, 1, 2]), SOUTH)
 
     const { pixels } = r.render('risk', 0)
 
@@ -55,7 +58,7 @@ describe('HeatmapRenderer', () => {
   })
 
   it('blends neighbouring hours for fractional times', () => {
-    const r = new HeatmapRenderer(heatmap([uniform(0), uniform(4)]))
+    const r = new HeatmapRenderer(heatmap([uniform(0), uniform(4)]), MIDDLE)
 
     expect(r.valueAt('risk', 0, -99, 41)).toBe(0)
     expect(r.valueAt('risk', 0.5, -99, 41)).toBeCloseTo(2)
@@ -65,7 +68,7 @@ describe('HeatmapRenderer', () => {
 
   it('interpolates bilinearly and ignores missing nodes', () => {
     const values = [0, 4, null, 0, 4, null, 0, 4, null]
-    const r = new HeatmapRenderer(heatmap([values]))
+    const r = new HeatmapRenderer(heatmap([values]), MIDDLE)
 
     expect(r.valueAt('risk', 0, -99.5, 41)).toBeCloseTo(2)
     expect(r.valueAt('risk', 0, -98.5, 41)).toBeCloseTo(4) // only the valid neighbour counts
@@ -73,7 +76,7 @@ describe('HeatmapRenderer', () => {
   })
 
   it('double-buffers frames so the map never reads a half-written image', () => {
-    const r = new HeatmapRenderer(heatmap([uniform(1)]))
+    const r = new HeatmapRenderer(heatmap([uniform(1)]), MIDDLE)
 
     expect(r.render('risk', 0).pixels).not.toBe(r.render('risk', 0).pixels)
   })

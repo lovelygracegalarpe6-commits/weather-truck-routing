@@ -28,10 +28,11 @@ export function useHeatmap(plan: PlanResponse | null) {
   useEffect(() => {
     if (!plan) return
     const ctrl = new AbortController()
+    const paths = plan.routes.map((r) => decimate(r.path, MAX_POINTS_PER_PATH))
     api
       .heatmap(
         {
-          paths: plan.routes.map((r) => decimate(r.path, MAX_POINTS_PER_PATH)),
+          paths,
           departure_utc: plan.trip.departure_utc,
           load_weight_lb: plan.trip.load_weight_lb,
           hours: HEATMAP_HOURS,
@@ -39,7 +40,7 @@ export function useHeatmap(plan: PlanResponse | null) {
         ctrl.signal,
       )
       .then((data) => {
-        setResult({ status: 'success', renderer: new HeatmapRenderer(data), error: null, planKey: plan.generated_at })
+        setResult({ status: 'success', renderer: new HeatmapRenderer(data, paths), error: null, planKey: plan.generated_at })
       })
       .catch((error: Error) => {
         if (error.name === 'AbortError') return

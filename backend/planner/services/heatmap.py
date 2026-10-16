@@ -55,6 +55,7 @@ def build_heatmap(
             "step": spec.step,
             "nx": spec.nx,
             "ny": spec.ny,
+            "radius_km": round(grid.radius_km, 1),
         },
         "nodes": list(grid.nodes),
         "start_utc": iso_utc(start),

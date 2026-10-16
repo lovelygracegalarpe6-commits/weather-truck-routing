@@ -48,3 +48,10 @@ def test_multiple_routes_share_one_grid():
 def test_requires_a_path():
     with pytest.raises(ValueError):
         build_corridor([], max_nodes=10)
+
+
+def test_reports_the_radius_it_used():
+    assert build_corridor([EAST_WEST], max_nodes=10_000, radius_km=20).radius_km == 20
+    # Coarse spacings widen the corridor so it stays a few nodes across.
+    coarse = build_corridor([[(-118.0, 34.0), (-74.0, 40.7)]], max_nodes=100)
+    assert coarse.radius_km >= 1.5 * coarse.spec.step * 111.32 - 1e-9

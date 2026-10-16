@@ -1,5 +1,6 @@
-import type { HeatmapLayerKey, HeatmapResponse } from '../api/types'
+import type { HeatmapLayerKey, HeatmapResponse, LonLat } from '../api/types'
 import { buildLut, type ColorLut, HEATMAP_LAYERS } from './colors'
+import { corridorMask } from './corridorMask'
 
 /** Image corners for a MapLibre image source: top-left, top-right, bottom-right, bottom-left. */
 export type Corners = [[number, number], [number, number], [number, number], [number, number]]
@@ -19,34 +20,10 @@ function latFromMercatorY(y: number): number {
   return (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI
 }
 
-// Pixels with almost no neighbouring data are skipped entirely.
+// Pixels with almost no neighbouring data are skipped entirely; opacity also fades with
+// that interpolation weight, so it reaches zero continuously where the data ends.
 const MIN_WEIGHT = 0.02
-// Opacity fades with a blurred corridor-coverage field (smoothstep between these), so
-// the corridor ends in soft rounded edges instead of grid-aligned rectangles.
-const EDGE_START = 0.12
-const EDGE_END = 0.6
-const EDGE_SCALE = 1 / (EDGE_END - EDGE_START)
-
-/** Separable [1 2 1] blur of a grid, clamped at the borders. */
-function blur(grid: Float32Array, nx: number, ny: number): Float32Array {
-  const tmp = new Float32Array(grid.length)
-  const out = new Float32Array(grid.length)
-  for (let j = 0; j < ny; j++) {
-    for (let i = 0; i < nx; i++) {
-      const l = grid[j * nx + Math.max(i - 1, 0)]
-      const r = grid[j * nx + Math.min(i + 1, nx - 1)]
-      tmp[j * nx + i] = (l + 2 * grid[j * nx + i] + r) / 4
-    }
-  }
-  for (let j = 0; j < ny; j++) {
-    for (let i = 0; i < nx; i++) {
-      const d = tmp[Math.max(j - 1, 0) * nx + i]
-      const u = tmp[Math.min(j + 1, ny - 1) * nx + i]
-      out[j * nx + i] = (d + 2 * tmp[j * nx + i] + u) / 4
-    }
-  }
-  return out
-}
+const WEIGHT_SCALE = 1 / (0.4 - MIN_WEIGHT)
 
 /**
  * Renders the corridor forecast grid to RGBA pixels for a MapLibre image source.
@@ -54,7 +31,9 @@ function blur(grid: Float32Array, nx: number, ny: number): Float32Array {
  * - The image is laid out in Web-Mercator space (rows are re-projected) so it lines up
  *   with the basemap even across many degrees of latitude.
  * - Values are bilinearly interpolated between grid nodes; nodes outside the corridor
- *   are skipped and the remaining weights renormalised, so edges fade out softly.
+ *   are skipped and the remaining weights renormalised.
+ * - Opacity follows the actual routes (a distance mask computed once), so the corridor
+ *   is a smooth band along the roads rather than the forecast grid's blocky outline.
  * - Fractional hours blend the two neighbouring hourly frames, which makes slider
  *   dragging and playback continuous instead of jumping hour to hour.
  * - Per-pixel sampling positions are computed once; a frame costs one pass over pixels.
@@ -74,12 +53,15 @@ export class HeatmapRenderer {
   private readonly fields = new Map<string, Float32Array>()
   private readonly luts = new Map<HeatmapLayerKey, ColorLut>()
   private readonly blendBuffer: Float32Array
-  private readonly coverage: Float32Array
+  private readonly mask: Float32Array
   private readonly buffers: [Uint8ClampedArray<ArrayBuffer>, Uint8ClampedArray<ArrayBuffer>]
   private flip = 0
   private readonly data: HeatmapResponse
 
-  constructor(data: HeatmapResponse, pixelsPerCell = 8, maxSide = 512) {
+  // 4 px per grid cell is enough: the field is already a smooth bilinear surface and the
+  // GPU interpolates linearly between texels. (8 px cost 4x the per-frame work for no
+  // visible gain; measured with perf/browser_profile.mjs.)
+  constructor(data: HeatmapResponse, paths: LonLat[][], pixelsPerCell = 4, maxSide = 384) {
     this.data = data
     const { west, south, step, nx, ny } = data.grid
     this.nx = nx
@@ -115,8 +97,10 @@ export class HeatmapRenderer {
     }
     this.rowJ0 = new Int32Array(height)
     this.rowFy = new Float32Array(height)
+    const rowLats = new Float64Array(height)
     for (let py = 0; py < height; py++) {
       const lat = latFromMercatorY(yNorth + ((py + 0.5) / height) * ySpan)
+      rowLats[py] = lat
       const gy = (lat - south) / step
       const j0 = Math.max(0, Math.min(Math.floor(gy), ny - 2))
       this.rowJ0[py] = j0
@@ -124,9 +108,7 @@ export class HeatmapRenderer {
     }
 
     this.blendBuffer = new Float32Array(nx * ny)
-    const mask = new Float32Array(nx * ny)
-    for (const node of data.nodes) mask[node] = 1
-    this.coverage = blur(blur(mask, nx, ny), nx, ny)
+    this.mask = corridorMask({ width, height, west, east, rowLats }, paths, data.grid.radius_km)
     this.buffers = [new Uint8ClampedArray(width * height * 4), new Uint8ClampedArray(width * height * 4)]
   }
 
@@ -178,7 +160,7 @@ export class HeatmapRenderer {
     const { min, max, rgba, size } = this.lut(layer)
     const scale = (size - 1) / (max - min)
     const last = size - 1
-    const { nx, ny, width, height, colI0, colFx, rowJ0, rowFy, coverage } = this
+    const { nx, ny, width, height, colI0, colFx, rowJ0, rowFy, mask } = this
     const dx = nx > 1 ? 1 : 0
     const out = this.buffers[this.flip]
     this.flip ^= 1 // double-buffer: the previous frame may still be referenced by the map
@@ -212,15 +194,12 @@ export class HeatmapRenderer {
         } else {
           let idx = ((acc / wsum - min) * scale + 0.5) | 0
           idx = (idx < 0 ? 0 : idx > last ? last : idx) << 2
-          // Fade out towards the corridor edge using the blurred coverage field.
-          const cov =
-            gx * gy * coverage[a] + fx * gy * coverage[a + dx] + gx * fy * coverage[b] + fx * fy * coverage[b + dx]
-          let t = (cov - EDGE_START) * EDGE_SCALE
-          t = t < 0 ? 0 : t > 1 ? 1 : t
+          let w = (wsum - MIN_WEIGHT) * WEIGHT_SCALE
+          w = w > 1 ? 1 : w
           out[o] = rgba[idx]
           out[o + 1] = rgba[idx + 1]
           out[o + 2] = rgba[idx + 2]
-          out[o + 3] = rgba[idx + 3] * t * t * (3 - 2 * t)
+          out[o + 3] = rgba[idx + 3] * mask[o >> 2] * w * w * (3 - 2 * w)
         }
         o += 4
       }

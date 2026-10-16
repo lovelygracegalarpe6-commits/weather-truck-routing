@@ -101,6 +101,8 @@ export interface HeatmapGrid {
   step: number
   nx: number
   ny: number
+  /** Every corridor node lies within this distance of a route. */
+  radius_km: number
 }
 
 export interface HeatmapResponse {
